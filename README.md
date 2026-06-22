@@ -1,73 +1,138 @@
-# Sanaei Panel  Bot
-## امکانات
+# 🍌 BananaBot — ربات تلگرام مدیریت سرویس VPN
 
-### کاربر
+ربات تلگرامی برای فروش و مدیریت خودکار سرویس‌های VPN روی پنل sanaei  **3x-ui**.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://python.org)
+
+---
+
+## ✨ امکانات
+
+### 👤 کاربر
 - خرید سرویس با ایجاد خودکار کانفیگ روی پنل
-- اکانت تست
-- مشاهده سرویس‌ها، لینک کانفیگ، مصرف و بروزرسانی لینک
+- اکانت تست رایگان
+- مشاهده سرویس‌ها، لینک کانفیگ، مصرف و به‌روزرسانی لینک
 - کیف پول و افزایش موجودی (کارت به کارت)
 - FAQ و آموزش
 - پشتیبانی
 
-### ادمین (داخل ربات)
-- آمار کلی
+### 🔧 ادمین
+- آمار کلی ربات
 - مدیریت پنل‌ها (افزودن، تست اتصال، لیست Inbound)
 - مدیریت محصولات
 - تأیید/رد پرداخت‌های کارت به کارت
 - جستجوی کاربر و تغییر موجودی
-- FAQ و ارسال همگانی
-- تنظیمات (متن خوش‌آمد، کانال اجباری، اکانت تست، ...)
+- ارسال همگانی (Broadcast)
+- تنظیمات (متن خوش‌آمد، کانال اجباری، اکانت تست و ...)
 
-## پیش‌نیازها
+---
 
-- Python 3.11+
-- پنل 3x-ui با API Token (Settings → Security → API Token)
+## 📋 پیش‌نیازها
 
-## نصب
+| مورد | نسخه |
+|------|-------|
+| سیستم‌عامل | Ubuntu 20.04+ / Debian 11+ |
+| Python | 3.11 یا بالاتر |
+| پنل | [3x-ui](https://github.com/MHSanaei/3x-ui) با API Token فعال |
+| دسترسی | root یا sudo |
+
+---
+
+## 🚀 نصب سریع (توصیه‌شده)
 
 ```bash
-cd sanaei-bot
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-copy .env.example .env   # Windows
-# cp .env.example .env   # Linux
+bash <(curl -fsSL https://raw.githubusercontent.com/mazyarzohdi/BananaBot/main/install.sh)
 ```
 
-فایل `.env` را ویرایش کنید:
+یا دستی:
+
+```bash
+git clone https://github.com/mazyarzohdi/BananaBot.git
+cd BananaBot
+sudo bash install.sh
+```
+
+اسکریپت به‌صورت خودکار:
+1. ✅ پیش‌نیازهای سیستم را نصب می‌کند
+2. ✅ محیط مجازی Python می‌سازد
+3. ✅ کتابخانه‌ها را نصب می‌کند
+4. ✅ از شما می‌خواهد توکن ربات، آیدی ادمین و سایر تنظیمات را وارد کنید
+5. ✅ فایل `.env` را می‌سازد
+6. ✅ سرویس systemd ایجاد می‌کند و ربات را راه‌اندازی می‌کند
+
+---
+
+## ⚙️ پیکربندی دستی
+
+فایل `.env` را در ریشه پروژه بسازید:
 
 ```env
-BOT_TOKEN=توکن_ربات
-ADMIN_IDS=123456789
-CARD_NUMBER=6037-xxxx-xxxx-xxxx
+# توکن ربات از @BotFather
+BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
+
+# آیدی عددی ادمین (یک یا چند عدد با کاما)
+ADMIN_IDS=123456789,987654321
+
+# مسیر پایگاه داده
+DATABASE_PATH=data/bot.db
+
+# زبان پیش‌فرض (fa یا en)
+DEFAULT_LANG=fa
+
+# شماره کارت برای پرداخت (اختیاری)
+CARD_NUMBER=6037-XXXX-XXXX-XXXX
 CARD_HOLDER=نام صاحب کارت
+
+# کانال اجباری برای خرید (اختیاری)
+REQUIRED_CHANNEL=@mychannel
 ```
 
-## اجرا
+---
+
+## 🎛️ اسکریپت مدیریت
+
+پس از نصب، برای مدیریت ربات:
 
 ```bash
-python main.py
+sudo bash /opt/BananaBot/manage.sh
 ```
 
-## راه‌اندازی اولیه
+### امکانات پنل مدیریت:
 
-1. ربات را اجرا کنید و از منوی **پنل مدیریت** وارد شوید.
-2. **افزودن پنل**: `/add_panel`
-   - آدرس پنل (مثال: `https://panel.example.com`)
-   - API Token از پنل
-   - IDهای Inbound (مثال: `1` یا `1,2`)
-3. **افزودن محصول**: از منوی مدیریت محصولات → افزودن
-4. (اختیاری) محصول تست: محصول با `is_trial=1` یا تنظیم `trial_product_id` با `/set trial_product_id 1`
+| گزینه | عملکرد |
+|-------|---------|
+| روشن کردن | `systemctl start bananabot` |
+| خاموش کردن | `systemctl stop bananabot` |
+| ریستارت | `systemctl restart bananabot` |
+| لاگ زنده | `journalctl -u bananabot -f` |
+| تغییر توکن | ویرایش `BOT_TOKEN` در `.env` |
+| تغییر ادمین | ویرایش `ADMIN_IDS` در `.env` |
+| تغییر کارت | ویرایش `CARD_NUMBER` و `CARD_HOLDER` |
+| به‌روزرسانی | `git pull` + نصب مجدد کتابخانه‌ها |
+| حذف کامل | حذف سرویس، فایل‌ها و پایگاه داده |
 
-## API پنل 3x-ui
+---
 
-این ربات از API رسمی پنل استفاده می‌کند:
+## 🤖 دستورات ادمین (داخل ربات)
+
+| دستور | توضیح |
+|-------|--------|
+| `/add_panel` | افزودن پنل 3x-ui |
+| `/user <id>` | اطلاعات کاربر |
+| `/addbalance <id> <amount>` | تغییر موجودی |
+| `/add_faq` | افزودن سوال متداول |
+| `/del_faq <id>` | حذف سوال متداول |
+| `/set <key> <value>` | تغییر تنظیمات |
+
+---
+
+## 📡 API پنل 3x-ui
+
+برای فعال‌سازی API در پنل:
+1. وارد پنل 3x-ui شوید
+2. به **Settings → Security** بروید
+3. **API Token** را فعال کنید و کپی کنید
 
 | عملیات | Endpoint |
 |--------|----------|
@@ -79,42 +144,65 @@ python main.py
 
 احراز هویت: `Authorization: Bearer <API_TOKEN>`
 
-مستندات کامل: در پنل → API Docs یا `/panel/api/openapi.json`
+---
 
-## دستورات ادمین
-
-| دستور | توضیح |
-|-------|--------|
-| `/add_panel` | افزودن پنل |
-| `/user <id>` | اطلاعات کاربر |
-| `/addbalance <id> <amount>` | تغییر موجودی |
-| `/add_faq` | افزودن FAQ |
-| `/del_faq <id>` | حذف FAQ |
-| `/set <key> <value>` | تغییر تنظیمات |
-
-## ساختار پروژه
+## 📁 ساختار پروژه
 
 ```
-sanaei-bot/
+BananaBot/
+├── install.sh              # اسکریپت نصب خودکار
+├── manage.sh               # اسکریپت مدیریت ربات
 ├── main.py                 # نقطه ورود
-├── config.py               # تنظیمات از .env
+├── config.py               # خواندن تنظیمات از .env
+├── requirements.txt        # کتابخانه‌های Python
+├── .env.example            # نمونه فایل تنظیمات
 ├── bot/
-│   ├── handlers/           # هندلرهای کاربر و ادمین
-│   ├── keyboards.py
-│   ├── messages.py
-│   └── middlewares.py
+│   ├── handlers/
+│   │   ├── admin.py        # هندلرهای ادمین
+│   │   └── user.py         # هندلرهای کاربر
+│   ├── keyboards.py        # کیبوردهای اینلاین و ریپلای
+│   ├── messages.py         # متون پیام‌ها
+│   └── middlewares.py      # میدلویرها
 ├── database/
-│   └── db.py               # SQLite
+│   └── db.py               # عملیات SQLite
 ├── services/
 │   ├── xui_client.py       # کلاینت API پنل
 │   └── subscription.py     # ایجاد/تمدید سرویس
 └── utils/
+    └── helpers.py          # توابع کمکی
 ```
 
-## نکات
+---
 
-- برای **On-Hold** (فعال شدن پس از اولین اتصال)، هنگام افزودن پنل فیلد `on_hold` در DB را `1` قرار دهید.
-- شماره کارت را در `.env` یا با `/set card_number ...` تنظیم کنید.
-- کانال اجباری: `/set channel_required @your_channel`
+## 🔄 دستورات مدیریت سریع
 
+```bash
+# وضعیت ربات
+systemctl status bananabot
 
+# شروع / توقف / ریستارت
+systemctl start bananabot
+systemctl stop bananabot
+systemctl restart bananabot
+
+# مشاهده لاگ زنده
+journalctl -u bananabot -f
+
+# لاگ آخرین اجرا
+journalctl -u bananabot -n 100 --no-pager
+```
+
+---
+
+## 📝 نکات مهم
+
+- برای **On-Hold** (فعال شدن پس از اولین اتصال)، هنگام افزودن پنل فیلد `on_hold` را فعال کنید.
+- فایل `.env` پس از نصب فقط توسط `root` قابل خواندن است (chmod 600).
+- پایگاه داده SQLite در مسیر `data/bot.db` ذخیره می‌شود.
+- قبل از به‌روزرسانی از طریق `manage.sh`، یک نسخه پشتیبان از `data/` بگیرید.
+
+---
+
+## 📄 مجوز
+
+MIT License — آزاد برای استفاده شخصی و تجاری.
