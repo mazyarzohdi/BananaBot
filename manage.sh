@@ -303,7 +303,7 @@ action_uninstall() {
     echo ""
     echo -n "  Type 'DELETE' to confirm: "
     read -r CONFIRM_TEXT
-    if [[ "$CONFIRM_TEXT" != "حذف" ]]; then
+    if [[ "$CONFIRM_TEXT" != "DELETE" ]]; then
         warn "Operation cancelled."
         return
     fi
