@@ -1,0 +1,1 @@
+"""Sanaei VPN Telegram Bot."""
