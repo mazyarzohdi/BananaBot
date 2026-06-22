@@ -6,12 +6,12 @@
 
 set -euo pipefail
 
-# ── Settings ─────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 INSTALL_DIR="/opt/BananaBot"
 SERVICE_NAME="bananabot"
 ENV_FILE="$INSTALL_DIR/.env"
 
-# ── رنگ‌ها ──────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# ── توابع کمکی ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 log()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
 success(){ echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC}  $*"; }
@@ -75,7 +75,7 @@ print_header() {
     echo ""
 }
 
-# ── منوی اصلی ───────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 main_menu() {
     print_header
     echo -e "  ${BOLD}━━━ Bot Control ━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -90,7 +90,7 @@ main_menu() {
     echo "   [7] 👤 Change Admin ID"
     echo "   [8] 💳 Change Card Number"
     echo "   [9] 📢 Change Required Channel"
-    echo "   [10] ⚙️  مشاهده Settings فعلی"
+    echo "   [10] ⚙️  View Current Settings"
     echo ""
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "   [11] 🔄 Update Bot from GitHub"
@@ -102,11 +102,11 @@ main_menu() {
     echo -n "  Choose an option: "
 }
 
-# ── روشن کردن ───────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_start() {
     log "Starting bot..."
     if systemctl is-active --quiet "$SERVICE_NAME"; then
-        warn "ربات از قبل Runningست."
+        warn "Bot is already running."
     else
         systemctl start "$SERVICE_NAME"
         sleep 1
@@ -118,18 +118,18 @@ action_start() {
     fi
 }
 
-# ── خاموش کردن ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_stop() {
     log "Stopping bot..."
     if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-        warn "ربات از قبل Stopped است."
+        warn "Bot is already stopped."
     else
         systemctl stop "$SERVICE_NAME"
-        success "ربات Stopped شد. ■"
+        success "Bot stopped. ■"
     fi
 }
 
-# ── ریستارت ─────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_restart() {
     log "Restart Bot..."
     systemctl restart "$SERVICE_NAME"
@@ -137,18 +137,18 @@ action_restart() {
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         success "Bot restarted. ↺"
     else
-        error "ربات پس از ریستارت اجرا نشد!"
+        error "Bot failed to start after restart!"
     fi
 }
 
-# ── لاگ زنده ────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_live_log() {
-    echo -e "${YELLOW}برای Exit از لاگ، Ctrl+C را فشار دهید.${NC}"
+    echo -e "${YELLOW}Press Ctrl+C to exit the logs.${NC}"
     echo ""
     journalctl -u "$SERVICE_NAME" -f --no-pager
 }
 
-# ── آخرین لاگ ───────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_last_logs() {
     echo ""
     journalctl -u "$SERVICE_NAME" -n 50 --no-pager
@@ -156,12 +156,12 @@ action_last_logs() {
     read -rp "Press Enter to return..."
 }
 
-# ── تغییر توکن ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_change_token() {
     echo ""
     echo -e "${CYAN}Current token:${NC} $(get_env_value 'BOT_TOKEN')"
     echo ""
-    echo -e "${CYAN}Enter new token (از @BotFather):${NC}"
+    echo -e "${CYAN}Enter new token (from @BotFather):${NC}"
     read -rp "  BOT_TOKEN: " NEW_TOKEN
     NEW_TOKEN="${NEW_TOKEN// /}"
     if [[ -z "$NEW_TOKEN" || "$NEW_TOKEN" == "your_bot_token_here" ]]; then
@@ -177,13 +177,13 @@ action_change_token() {
     fi
 }
 
-# ── تغییر ادمین ─────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_change_admin() {
     echo ""
     echo -e "${CYAN}Current admin IDs:${NC} $(get_env_value 'ADMIN_IDS')"
     echo ""
-    echo -e "${CYAN}Enter new admin ID(s) (با کاما جدا کنید):${NC}"
-    echo -e "${YELLOW}مثال: 123456789 یا 123456789,987654321${NC}"
+    echo -e "${CYAN}Enter new admin ID(s) (comma-separated):${NC}"
+    echo -e "${YELLOW}Example: 123456789 یا 123456789,987654321${NC}"
     read -rp "  ADMIN_IDS: " NEW_ADMIN
     NEW_ADMIN="${NEW_ADMIN// /}"
     if [[ ! "$NEW_ADMIN" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
@@ -199,13 +199,13 @@ action_change_admin() {
     fi
 }
 
-# ── Change Card Number ────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_change_card() {
     echo ""
     echo -e "${CYAN}Current card number:${NC} $(get_env_value 'CARD_NUMBER')"
     echo -e "${CYAN}Current card holder:${NC} $(get_env_value 'CARD_HOLDER')"
     echo ""
-    echo -e "${CYAN}New card number (Enter برای رد کردن):${NC}"
+    echo -e "${CYAN}New card number (Enter to skip):${NC}"
     read -rp "  CARD_NUMBER: " NEW_CARD
     NEW_CARD="${NEW_CARD// /}"
     if [[ -n "$NEW_CARD" ]]; then
@@ -224,19 +224,19 @@ action_change_card() {
     fi
 }
 
-# ── Change Required Channel ──────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_change_channel() {
     echo ""
     echo -e "${CYAN}Current required channel:${NC} $(get_env_value 'REQUIRED_CHANNEL')"
     echo ""
-    echo -e "${CYAN}New channel address (مثال: @mychannel — برای حذف خالی بگذارید):${NC}"
+    echo -e "${CYAN}New channel address (Example: @mychannel — leave blank to remove):${NC}"
     read -rp "  REQUIRED_CHANNEL: " NEW_CHANNEL
     NEW_CHANNEL="${NEW_CHANNEL// /}"
     set_env_value "REQUIRED_CHANNEL" "$NEW_CHANNEL"
     if [[ -z "$NEW_CHANNEL" ]]; then
         success "Required channel removed."
     else
-        success "Required channel changed to «$NEW_CHANNEL» تغییر یافت."
+        success "Required channel changed to «$NEW_CHANNEL» updated."
     fi
     echo -n "  Restart the bot? [y/N]: "
     read -r RESTART_CHOICE
@@ -245,10 +245,10 @@ action_change_channel() {
     fi
 }
 
-# ── مشاهده Settings ──────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_show_config() {
     echo ""
-    echo -e "${BOLD}  ═══ Settings فعلی ═══${NC}"
+    echo -e "${BOLD}  ═══ Settings Current ═══${NC}"
     echo ""
     # نمایش توکن با مخفی‌سازی وسط
     TOKEN=$(get_env_value 'BOT_TOKEN')
@@ -268,7 +268,7 @@ action_show_config() {
     read -rp "  Press Enter to return..."
 }
 
-# ── به‌روزرسانی از GitHub ────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_update() {
     echo ""
     warn "Updating will not modify the .env file."
@@ -295,11 +295,11 @@ action_update() {
     fi
 }
 
-# ── حذف کامل ────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 action_uninstall() {
     echo ""
     echo -e "${RED}${BOLD}  ⚠️  Warning: This action cannot be undone!${NC}"
-    echo -e "${RED}  ربات، فایل‌های Settings و پایگاه داده حذف می‌شوند.${NC}"
+    echo -e "${RED}  ربات، configuration files and database will be removed.${NC}"
     echo ""
     echo -n "  Type 'DELETE' to confirm: "
     read -r CONFIRM_TEXT
@@ -308,7 +308,7 @@ action_uninstall() {
         return
     fi
 
-    log "Stopped کردن سرویس..."
+    log "Stopping service..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 
@@ -324,7 +324,7 @@ action_uninstall() {
     exit 0
 }
 
-# ── حلقه اصلی ───────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 run() {
     check_root
     check_installed
@@ -353,7 +353,7 @@ run() {
 
         if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" ]]; then
             echo ""
-            read -rp "  برای بازگشت به منو Enter بزنید..."
+            read -rp "  Press Enter to return to menu..."
         fi
     done
 }
