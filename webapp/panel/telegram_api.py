@@ -14,9 +14,11 @@ Used for two things:
 """
 
 import json
+import mimetypes
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from django.conf import settings
 
@@ -46,6 +48,59 @@ def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> d
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return _call("sendMessage", payload)
+
+
+def send_photo(
+    chat_id: int,
+    photo_bytes: bytes,
+    filename: str,
+    caption: str = "",
+    reply_markup: dict | None = None,
+    timeout: float = 20,
+) -> dict | None:
+    """Send a photo (e.g. an uploaded deposit receipt) via multipart/form-data.
+
+    Everything else in this module sends plain JSON, but sendPhoto with raw
+    bytes needs an actual file upload, so this builds the multipart body by
+    hand rather than pulling in an HTTP client dependency just for this.
+    """
+    token = settings.BOT_TOKEN
+    if not token:
+        return None
+    url = f"{API_BASE}/bot{token}/sendPhoto"
+    boundary = uuid.uuid4().hex
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    def field(name: str, value: str) -> bytes:
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode("utf-8")
+
+    body = bytearray()
+    body += field("chat_id", str(chat_id))
+    if caption:
+        body += field("caption", caption)
+    if reply_markup:
+        body += field("reply_markup", json.dumps(reply_markup))
+    body += (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8")
+    body += photo_bytes
+    body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    req = urllib.request.Request(
+        url, data=bytes(body), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return None
 
 
 def edit_message_caption(chat_id: int, message_id: int, caption: str) -> bool:

@@ -92,12 +92,14 @@ def get_users_page(page: int, per_page: int = 20, search: str = "") -> tuple[lis
     return rows_to_list(rows), total
 
 
-def update_user_balance(user_id: int, delta: int):
+def update_user_balance(user_id: int, delta: int) -> int:
     with get_conn() as conn:
         conn.execute(
             "UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?",
             (delta, user_id),
         )
+        row = conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["balance"] if row else 0
 
 
 def set_user_banned(user_id: int, banned: bool):
@@ -255,6 +257,56 @@ def get_payment(payment_id: int) -> dict | None:
             (payment_id,),
         ).fetchone()
     return row_to_dict(row)
+
+
+def create_payment(user_id: int, amount: int, payment_method: str = "card") -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO payments (user_id, amount, payment_method) VALUES (?, ?, ?)",
+            (user_id, amount, payment_method),
+        )
+        return cur.lastrowid
+
+
+def get_pending_deposit_awaiting_receipt(user_id: int) -> dict | None:
+    """The user's most recent pending top-up that has no receipt yet —
+    mirrors the exact query the bot uses in its own `deposit_receipt`
+    handler, so both surfaces agree on which payment a new receipt
+    belongs to."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' "
+            "AND receipt_file_id IS NULL AND product_id IS NULL AND renew_sub_id IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def get_pending_deposits_awaiting_review(user_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' "
+            "AND receipt_file_id IS NOT NULL ORDER BY id DESC",
+            (user_id,),
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def set_payment_receipt(payment_id: int, file_id: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE payments SET receipt_file_id = ? WHERE id = ?",
+            (file_id, payment_id),
+        )
+
+
+def set_payment_notif_chats(payment_id: int, chats: list[dict]):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE payments SET notif_chats = ? WHERE id = ?",
+            (json.dumps(chats), payment_id),
+        )
 
 
 def approve_payment(payment_id: int, admin_note: str = ""):

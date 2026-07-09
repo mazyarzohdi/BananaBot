@@ -55,6 +55,17 @@ async def main():
     await db.set_setting("bot_username", me.username or "")
     logger.info(f"Bot username: @{me.username}")
 
+    # The bot prefers CARD_NUMBER/CARD_HOLDER from .env over the DB setting
+    # (see bot/handlers/user.py: `settings.card_number or await db.get_setting(...)`),
+    # but the web panel has no access to this process's .env and only ever
+    # reads the DB `settings` table. Without this sync, an admin who set the
+    # card via install.sh/manage.sh would see deposits work fine in the bot
+    # while the web panel's wallet page kept showing "not configured yet".
+    if settings.card_number:
+        await db.set_setting("card_number", settings.card_number)
+    if settings.card_holder:
+        await db.set_setting("card_holder", settings.card_holder)
+
     # Register the Mini App (Web App) button in Telegram's chat menu, so the
     # panel can be opened directly from the bot's chat, not just a browser.
     # Telegram only accepts HTTPS URLs for web_app menu buttons.

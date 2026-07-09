@@ -116,6 +116,20 @@ def dashboard(request: HttpRequest):
 
 # ── Admin: Users ──────────────────────────────────────────────────────────────
 
+def _notify_balance_change(user: dict, delta: int, new_balance: int):
+    """Same message text the bot itself sends from /addbalance and the
+    admin-panel-in-Telegram balance adjust flow (uadm_balance_apply), so a
+    user gets identical wording no matter which surface the admin used.
+    """
+    telegram_id = user.get("telegram_id")
+    if not telegram_id:
+        return
+    telegram_api.send_message(
+        int(telegram_id),
+        f"💰 موجودی شما {delta:+,} تومان تغییر کرد.\nموجودی جدید: {new_balance:,} تومان",
+    )
+
+
 @admin_required
 def admin_users(request: HttpRequest):
     page = int(request.GET.get("page", 1))
@@ -142,12 +156,14 @@ def admin_user_detail(request: HttpRequest, telegram_id: int):
         action = request.POST.get("action")
         if action == "add_balance":
             amount = int(request.POST.get("amount", 0))
-            bot_db.update_user_balance(user["id"], amount)
-            messages.success(request, f"{amount:,} تومان به موجودی اضافه شد.")
+            new_balance = bot_db.update_user_balance(user["id"], amount)
+            _notify_balance_change(user, amount, new_balance)
+            messages.success(request, f"{amount:,} تومان به موجودی اضافه شد. به کاربر اطلاع داده شد.")
         elif action == "sub_balance":
             amount = int(request.POST.get("amount", 0))
-            bot_db.update_user_balance(user["id"], -amount)
-            messages.success(request, f"{amount:,} تومان از موجودی کم شد.")
+            new_balance = bot_db.update_user_balance(user["id"], -amount)
+            _notify_balance_change(user, -amount, new_balance)
+            messages.success(request, f"{amount:,} تومان از موجودی کم شد. به کاربر اطلاع داده شد.")
         elif action == "ban":
             bot_db.set_user_banned(user["id"], True)
             messages.warning(request, "کاربر بن شد.")
@@ -458,6 +474,18 @@ def user_buy(request: HttpRequest):
     })
 
 
+def _payment_actions_markup(payment_id: int) -> dict:
+    """Same callback_data scheme as bot.keyboards.payment_actions_inline.
+    Whichever process (bot or panel) sends the message, Telegram routes the
+    button tap back to the same bot's update stream, so the bot's existing
+    pay_ok/pay_no handlers can approve/reject it without any duplicated
+    approval logic here."""
+    return {"inline_keyboard": [[
+        {"text": "✅ تأیید", "callback_data": f"pay_ok:{payment_id}"},
+        {"text": "❌ رد", "callback_data": f"pay_no:{payment_id}"},
+    ]]}
+
+
 @login_required
 def user_wallet(request: HttpRequest):
     tg_user = get_current_user(request)
@@ -466,9 +494,84 @@ def user_wallet(request: HttpRequest):
     card_holder = bot_db.get_setting("card_holder", "")
     min_deposit = int(bot_db.get_setting("min_deposit", "10000"))
     bot_username = bot_db.get_setting("bot_username", "")
+
+    if request.method == "POST" and db_user:
+        action = request.POST.get("action")
+
+        if action == "create_deposit":
+            if not card_number:
+                messages.error(request, "شماره کارت هنوز توسط ادمین تنظیم نشده. لطفاً بعداً تلاش کنید.")
+            else:
+                try:
+                    amount = int(request.POST.get("amount", 0))
+                except ValueError:
+                    amount = 0
+                if amount < min_deposit:
+                    messages.error(request, f"حداقل مبلغ واریز {min_deposit:,} تومان است.")
+                else:
+                    bot_db.create_payment(db_user["id"], amount, "card")
+                    messages.success(request, "درخواست واریز ثبت شد. حالا تصویر رسید پرداخت را آپلود کنید.")
+            return redirect("panel:user_wallet")
+
+        elif action == "upload_receipt":
+            payment_id = int(request.POST.get("payment_id", 0) or 0)
+            payment = bot_db.get_payment(payment_id)
+            photo = request.FILES.get("receipt")
+            valid = (
+                payment and payment["user_id"] == db_user["id"]
+                and payment["status"] == "pending" and not payment.get("receipt_file_id")
+            )
+            if not valid:
+                messages.error(request, "درخواست واریز معتبری پیدا نشد. لطفاً دوباره درخواست واریز ثبت کنید.")
+            elif not photo:
+                messages.error(request, "لطفاً تصویر رسید را انتخاب کنید.")
+            elif not photo.content_type or not photo.content_type.startswith("image/"):
+                messages.error(request, "فقط فایل تصویری قابل قبول است.")
+            else:
+                photo_bytes = photo.read()
+                caption = (
+                    f"💳 درخواست افزایش موجودی\n"
+                    f"👤 کاربر: {tg_user['id']}\n"
+                    f"💰 مبلغ پرداختی: {payment['amount']:,} تومان\n"
+                    f"🌐 ثبت‌شده از پنل وب"
+                )
+                markup = _payment_actions_markup(payment_id)
+                sent_refs, file_id = [], None
+                for admin_id in settings.ADMIN_TELEGRAM_IDS:
+                    result = telegram_api.send_photo(
+                        admin_id, photo_bytes, photo.name or "receipt.jpg",
+                        caption=caption, reply_markup=markup,
+                    )
+                    if result and result.get("ok"):
+                        msg = result["result"]
+                        sent_refs.append({"chat_id": msg["chat"]["id"], "message_id": msg["message_id"]})
+                        if not file_id:
+                            sizes = msg.get("photo") or []
+                            if sizes:
+                                file_id = sizes[-1]["file_id"]
+                if sent_refs:
+                    if file_id:
+                        bot_db.set_payment_receipt(payment_id, file_id)
+                    bot_db.set_payment_notif_chats(payment_id, sent_refs)
+                    messages.success(request, "رسید برای ادمین ارسال شد. پس از تأیید، موجودی شما شارژ می‌شود.")
+                else:
+                    messages.error(
+                        request,
+                        "ارسال رسید به ادمین ناموفق بود. لطفاً دوباره تلاش کنید یا رسید را مستقیم در ربات ارسال کنید.",
+                    )
+            return redirect("panel:user_wallet")
+
+    pending_receipt_payment = None
+    awaiting_review = []
+    if db_user:
+        pending_receipt_payment = bot_db.get_pending_deposit_awaiting_receipt(db_user["id"])
+        awaiting_review = bot_db.get_pending_deposits_awaiting_review(db_user["id"])
+
     return render(request, "user/wallet.html", {
         "db_user": db_user, "tg_user": tg_user,
         "card_number": card_number, "card_holder": card_holder,
         "min_deposit": min_deposit, "is_admin": is_admin(request),
         "bot_username": bot_username,
+        "pending_receipt_payment": pending_receipt_payment,
+        "awaiting_review": awaiting_review,
     })
