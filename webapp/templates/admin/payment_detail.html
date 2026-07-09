@@ -21,6 +21,23 @@
     <div class="detail-row"><span>تاریخ:</span><small>{{ payment.created_at }}</small></div>
   </div>
 
+  <div class="card">
+    <h2 class="card-title"><i class="fa fa-receipt"></i> رسید پرداخت</h2>
+    {% if payment.receipt_file_id %}
+      <a href="{% url 'panel:admin_payment_receipt' payment.id %}" target="_blank" rel="noopener">
+        <img src="{% url 'panel:admin_payment_receipt' payment.id %}"
+             alt="رسید پرداخت #{{ payment.id }}"
+             style="width:100%; border-radius:10px; display:block; cursor:zoom-in;"
+             loading="lazy"/>
+      </a>
+      <p class="login-hint" style="margin-top:8px;">
+        <i class="fa fa-info-circle"></i> برای مشاهده در سایز کامل روی تصویر بزنید.
+      </p>
+    {% else %}
+      <p class="empty-row">کاربر هنوز رسیدی برای این پرداخت آپلود نکرده است.</p>
+    {% endif %}
+  </div>
+
   {% if payment.status == 'pending' %}
   <div class="card">
     <h2 class="card-title">اقدام</h2>

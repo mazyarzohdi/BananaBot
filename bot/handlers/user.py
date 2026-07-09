@@ -4,7 +4,7 @@ import json
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -59,9 +59,77 @@ async def check_channel(member_check, user_id: int, channel: str) -> bool:
         return False
 
 
+def _build_product_preview(product: dict, coupon_code: str | None = None, discount_amount: int = 0):
+    """Build the text + confirm/coupon keyboard shown before a purchase.
+
+    Shared between the in-bot "buy:<id>" callback (tapping a product in the
+    list) and the /start buy_<id> deep link (coming from the Mini App's
+    خرید از ربات button), so both entry points show the exact same screen.
+    """
+    discount_amount = discount_amount or 0
+    final_price = product["price"] - discount_amount
+    text = (
+        f"📦 {product['name']}\n"
+        f"📊 حجم: {product['volume_gb']} GB\n"
+        f"⏱ مدت: {product['duration_days']} روز\n"
+        f"💰 قیمت: {product['price']:,} تومان\n"
+        f"📡 پنل: {product['panel_name']}\n"
+    )
+    if coupon_code and discount_amount:
+        text += f"🎟 کوپن: {coupon_code} (−{discount_amount:,} تومان)\n"
+        text += f"💵 قیمت نهایی: {final_price:,} تومان\n"
+    if product.get("description"):
+        text += f"\n📝 {product['description']}"
+    markup = confirm_buy_inline(
+        product["id"],
+        product.get("panel_id"),
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
+    )
+    return text, markup
+
+
 @router.message(CommandStart())
-async def cmd_start(message: Message, db_user: dict, is_admin: bool):
+async def cmd_start(
+    message: Message,
+    db_user: dict,
+    is_admin: bool,
+    command: CommandObject,
+    state: FSMContext,
+):
     db = get_db()
+    args = (command.args or "").strip()
+
+    # Deep link from the Mini App's "خرید از ربات" button:
+    # https://t.me/<bot>?start=buy_<product_id>
+    if args.startswith("buy_"):
+        raw_id = args[len("buy_"):]
+        if raw_id.isdigit():
+            settings = get_settings()
+            channel = await db.get_setting("channel_required") or settings.required_channel
+            if channel and not await check_channel(
+                message.bot.get_chat_member, message.from_user.id, channel
+            ):
+                invite_link = await db.get_setting("channel_invite_link", "")
+                await message.answer(
+                    t("channel_required"),
+                    reply_markup=channel_required_inline(invite_link, "recheck:buy"),
+                )
+                return
+            product = await db.get_product(int(raw_id))
+            if product and product.get("is_active"):
+                text, markup = _build_product_preview(product)
+                await message.answer(text, reply_markup=markup)
+                return
+            await message.answer("❌ این محصول یافت نشد یا دیگر فعال نیست.")
+            return
+
+    # Deep link from the Mini App's wallet page "ارسال رسید در ربات" button:
+    # https://t.me/<bot>?start=deposit
+    if args == "deposit":
+        await _start_deposit_flow(message.answer, state)
+        return
+
     welcome = await db.get_setting("welcome_text", t("welcome"))
     await message.answer(welcome, reply_markup=main_menu(is_admin))
 
@@ -191,30 +259,9 @@ async def buy_product_preview(callback: CallbackQuery, state: FSMContext):
     fsm_data = await state.get_data()
     coupon_code = fsm_data.get("coupon_code")
     discount_amount = fsm_data.get("discount_amount", 0)
-    final_price = product["price"] - discount_amount
 
-    text = (
-        f"📦 {product['name']}\n"
-        f"📊 حجم: {product['volume_gb']} GB\n"
-        f"⏱ مدت: {product['duration_days']} روز\n"
-        f"💰 قیمت: {product['price']:,} تومان\n"
-        f"📡 پنل: {product['panel_name']}\n"
-    )
-    if coupon_code and discount_amount:
-        text += f"🎟 کوپن: {coupon_code} (−{discount_amount:,} تومان)\n"
-        text += f"💵 قیمت نهایی: {final_price:,} تومان\n"
-    if product.get("description"):
-        text += f"\n📝 {product['description']}"
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=confirm_buy_inline(
-            product_id,
-            product.get("panel_id"),
-            coupon_code=coupon_code,
-            discount_amount=discount_amount,
-        ),
-    )
+    text, markup = _build_product_preview(product, coupon_code, discount_amount)
+    await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
 

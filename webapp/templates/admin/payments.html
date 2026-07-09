@@ -15,7 +15,7 @@
   </div>
   <table class="table">
     <thead>
-      <tr><th>ID</th><th>کاربر</th><th>مبلغ</th><th>وضعیت</th><th>روش</th><th>تاریخ</th><th>عملیات</th></tr>
+      <tr><th>ID</th><th>کاربر</th><th>مبلغ</th><th>رسید</th><th>وضعیت</th><th>روش</th><th>تاریخ</th><th>عملیات</th></tr>
     </thead>
     <tbody>
     {% for p in payments %}
@@ -23,6 +23,10 @@
         <td>{{ p.id }}</td>
         <td>{{ p.full_name|default:p.telegram_id }}</td>
         <td>{{ p.amount|floatformat:0 }} تومان</td>
+        <td>
+          {% if p.receipt_file_id %}<span class="badge-green"><i class="fa fa-image"></i> دارد</span>
+          {% else %}<span class="badge-orange">ندارد</span>{% endif %}
+        </td>
         <td>
           {% if p.status == 'pending' %}<span class="badge-orange">در انتظار</span>
           {% elif p.status == 'approved' %}<span class="badge-green">تأیید</span>
@@ -33,7 +37,7 @@
         <td><a href="{% url 'panel:admin_payment_detail' p.id %}" class="btn btn-sm btn-primary"><i class="fa fa-eye"></i></a></td>
       </tr>
     {% empty %}
-      <tr><td colspan="7" class="empty-row">پرداختی پیدا نشد.</td></tr>
+      <tr><td colspan="8" class="empty-row">پرداختی پیدا نشد.</td></tr>
     {% endfor %}
     </tbody>
   </table>

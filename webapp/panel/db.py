@@ -275,12 +275,18 @@ def approve_payment(payment_id: int, admin_note: str = ""):
         return True
 
 
-def reject_payment(payment_id: int, admin_note: str = ""):
+def reject_payment(payment_id: int, admin_note: str = "") -> bool:
     with get_conn() as conn:
+        payment = row_to_dict(
+            conn.execute("SELECT * FROM payments WHERE id=?", (payment_id,)).fetchone()
+        )
+        if not payment or payment["status"] != "pending":
+            return False
         conn.execute(
             "UPDATE payments SET status='rejected', admin_note=? WHERE id=?",
             (admin_note, payment_id),
         )
+        return True
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

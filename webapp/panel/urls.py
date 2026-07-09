@@ -35,6 +35,7 @@ urlpatterns = [
     # Admin — payments
     path("admin/payments/",                     views.admin_payments,        name="admin_payments"),
     path("admin/payments/<int:payment_id>/",    views.admin_payment_detail,  name="admin_payment_detail"),
+    path("admin/payments/<int:payment_id>/receipt/", views.admin_payment_receipt, name="admin_payment_receipt"),
 
     # Admin — settings
     path("admin/settings/", views.admin_settings, name="admin_settings"),

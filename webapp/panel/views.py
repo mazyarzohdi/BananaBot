@@ -2,7 +2,7 @@
 
 import json
 from django.shortcuts import render, redirect
-from django.http import JsonResponse, HttpRequest
+from django.http import JsonResponse, HttpRequest, HttpResponse, Http404
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
@@ -18,6 +18,7 @@ from .auth import (
     is_admin,
 )
 from . import db as bot_db
+from . import telegram_api
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -261,6 +262,61 @@ def admin_panel_edit(request: HttpRequest, panel_id: int):
 
 # ── Admin: Payments ───────────────────────────────────────────────────────────
 
+def _notify_payment_status(payment: dict, status: str, note: str = ""):
+    """Mirror what the bot itself does in pay_confirm/pay_reject when an
+    admin acts from inside Telegram. Approving/rejecting from the web panel
+    used to only touch the database — the user never found out their
+    balance changed, and (for approvals) never got the button to continue
+    their purchase/renewal. This sends the same notification + button the
+    bot would have sent, and cleans up the ✅/❌ buttons on the admin
+    notification message(s) so a second admin can't act on them from
+    inside Telegram anymore.
+    """
+    telegram_id = payment.get("telegram_id")
+    if telegram_id:
+        if status == "approved":
+            db_user = bot_db.get_user_by_telegram_id(int(telegram_id))
+            text = "✅ پرداخت تأیید شد."
+            if db_user:
+                text += f"\n💰 موجودی: {db_user['balance']:,} تومان"
+            reply_markup = None
+            if payment.get("renew_sub_id"):
+                text += f"\n\nحالا می‌توانید تمدید سرویس #{payment['renew_sub_id']} را تکمیل کنید 👇"
+                reply_markup = {"inline_keyboard": [[
+                    {"text": "🔁 تکمیل تمدید سرویس", "callback_data": f"svc_renew_ok:{payment['renew_sub_id']}"},
+                ]]}
+            elif payment.get("product_id"):
+                product = bot_db.get_product(payment["product_id"])
+                if product:
+                    text += f"\n\nحالا می‌توانید خرید «{product['name']}» را تکمیل کنید 👇"
+                    reply_markup = {"inline_keyboard": [[
+                        {"text": "🛒 تکمیل خرید", "callback_data": f"confirm_buy:{payment['product_id']}"},
+                    ]]}
+            if note:
+                text += f"\n📝 یادداشت: {note}"
+            telegram_api.send_message(int(telegram_id), text, reply_markup)
+        else:
+            text = "❌ پرداخت رد شد."
+            if note:
+                text += f"\n📝 یادداشت: {note}"
+            telegram_api.send_message(int(telegram_id), text)
+
+    status_text = (
+        f"✅ این پرداخت تأیید شد. (پنل وب)\n💰 مبلغ: {payment['amount']:,} تومان"
+        if status == "approved" else "❌ این پرداخت رد شد. (پنل وب)"
+    )
+    try:
+        chats = json.loads(payment.get("notif_chats") or "[]")
+    except (TypeError, ValueError):
+        chats = []
+    for item in chats:
+        chat_id, message_id = item.get("chat_id"), item.get("message_id")
+        if not chat_id or not message_id:
+            continue
+        if not telegram_api.edit_message_caption(chat_id, message_id, status_text):
+            telegram_api.edit_message_text(chat_id, message_id, status_text)
+
+
 @admin_required
 def admin_payments(request: HttpRequest):
     page = int(request.GET.get("page", 1))
@@ -285,16 +341,55 @@ def admin_payment_detail(request: HttpRequest, payment_id: int):
         action = request.POST.get("action")
         note = request.POST.get("note", "")
         if action == "approve":
-            bot_db.approve_payment(payment_id, note)
-            messages.success(request, "پرداخت تأیید و موجودی شارژ شد.")
+            if bot_db.approve_payment(payment_id, note):
+                _notify_payment_status(payment, "approved", note)
+                messages.success(request, "پرداخت تأیید و موجودی شارژ شد. به کاربر اطلاع داده شد.")
+            else:
+                messages.warning(request, "این پرداخت قبلاً بررسی شده بود.")
         elif action == "reject":
-            bot_db.reject_payment(payment_id, note)
-            messages.warning(request, "پرداخت رد شد.")
+            if bot_db.reject_payment(payment_id, note):
+                _notify_payment_status(payment, "rejected", note)
+                messages.warning(request, "پرداخت رد شد. به کاربر اطلاع داده شد.")
+            else:
+                messages.warning(request, "این پرداخت قبلاً بررسی شده بود.")
         return redirect("panel:admin_payments")
 
     return render(request, "admin/payment_detail.html", {
         "payment": payment, "is_admin": True,
     })
+
+
+@admin_required
+def admin_payment_receipt(request: HttpRequest, payment_id: int):
+    """Proxy a payment's uploaded receipt photo from Telegram.
+
+    receipt_file_id is a Telegram file_id, not a normal URL — it can only
+    be resolved into actual bytes by calling the Bot API with the bot
+    token, so we fetch it server-side here and stream it back instead of
+    exposing the raw Telegram file URL (which itself contains the bot
+    token) to the browser.
+    """
+    payment = bot_db.get_payment(payment_id)
+    if not payment or not payment.get("receipt_file_id"):
+        raise Http404("رسیدی برای این پرداخت ثبت نشده است.")
+
+    file_path = telegram_api.get_file_path(payment["receipt_file_id"])
+    if not file_path:
+        raise Http404("دریافت رسید از تلگرام ناموفق بود.")
+
+    content = telegram_api.download_file(file_path)
+    if content is None:
+        raise Http404("دریافت رسید از تلگرام ناموفق بود.")
+
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    content_type = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+        "webp": "image/webp", "gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+
+    response = HttpResponse(content, content_type=content_type)
+    response["Cache-Control"] = "private, max-age=3600"
+    return response
 
 
 # ── Admin: Settings ───────────────────────────────────────────────────────────
@@ -355,9 +450,11 @@ def user_buy(request: HttpRequest):
     tg_user = get_current_user(request)
     db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
     products = bot_db.get_products(active_only=True)
+    bot_username = bot_db.get_setting("bot_username", "")
     return render(request, "user/buy.html", {
         "products": products, "db_user": db_user,
         "tg_user": tg_user, "is_admin": is_admin(request),
+        "bot_username": bot_username,
     })
 
 
@@ -368,8 +465,10 @@ def user_wallet(request: HttpRequest):
     card_number = bot_db.get_setting("card_number", "")
     card_holder = bot_db.get_setting("card_holder", "")
     min_deposit = int(bot_db.get_setting("min_deposit", "10000"))
+    bot_username = bot_db.get_setting("bot_username", "")
     return render(request, "user/wallet.html", {
         "db_user": db_user, "tg_user": tg_user,
         "card_number": card_number, "card_holder": card_holder,
         "min_deposit": min_deposit, "is_admin": is_admin(request),
+        "bot_username": bot_username,
     })
