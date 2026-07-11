@@ -100,6 +100,14 @@ async def cmd_start(
     db = get_db()
     args = (command.args or "").strip()
 
+    # /start always means "abandon whatever flow you were in and go to the
+    # main menu" — without this, a state left over from e.g. an in-progress
+    # deposit (DepositForm.amount) or coupon entry (CouponForm.code) would
+    # keep intercepting the user's next message (any plain text, including
+    # main-menu button taps) and misinterpret it as that flow's input
+    # (e.g. "❌ مبلغ نامعتبر است" when tapping "📖 آموزش").
+    await state.clear()
+
     # Deep link from the Mini App's "خرید از ربات" button:
     # https://t.me/<bot>?start=buy_<product_id>
     if args.startswith("buy_"):
@@ -135,12 +143,14 @@ async def cmd_start(
 
 
 @router.message(F.text == t("back"))
-async def cmd_back(message: Message, is_admin: bool):
+async def cmd_back(message: Message, is_admin: bool, state: FSMContext):
+    await state.clear()
     await message.answer(t("main_menu"), reply_markup=main_menu(is_admin))
 
 
 @router.message(F.text == t("cancel"))
-async def cmd_cancel(message: Message, is_admin: bool):
+async def cmd_cancel(message: Message, is_admin: bool, state: FSMContext):
+    await state.clear()
     await message.answer(t("operation_cancelled"), reply_markup=main_menu(is_admin))
 
 

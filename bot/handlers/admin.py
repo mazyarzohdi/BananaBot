@@ -137,10 +137,11 @@ def admin_only(handler):
 
 
 @router.message(F.text == t("admin_menu"))
-async def admin_panel(message: Message):
+async def admin_panel(message: Message, state: FSMContext):
     if message.from_user.id not in get_settings().admin_ids:
         await message.answer(t("not_admin"))
         return
+    await state.clear()
     await message.answer(t("admin_menu"), reply_markup=admin_menu())
 
 
