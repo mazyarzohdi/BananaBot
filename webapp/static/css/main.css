@@ -337,3 +337,18 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 }
 
 code { background: var(--bg3); padding: 2px 6px; border-radius: 4px; font-size: 13px; direction: ltr; display: inline-block; }
+
+/* ── Reseller quota bar ───────────────────────────────────────────────────── */
+.quota-bar-track { background: var(--bg3); border-radius: 20px; height: 10px; overflow: hidden; margin: 8px 0; }
+.quota-bar-fill { background: var(--primary); height: 100%; border-radius: 20px; transition: width .3s; }
+.quota-bar-fill.warn { background: var(--warning); }
+.quota-bar-fill.danger { background: var(--danger); }
+.config-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+.config-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+.config-card-title { font-weight: 600; font-size: 14px; }
+.config-form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.config-form-row .input { max-width: 140px; }
+.locked-banner {
+  background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.25); color: var(--danger);
+  padding: 14px; border-radius: var(--radius); margin-bottom: 16px; display: flex; align-items: center; gap: 10px;
+}

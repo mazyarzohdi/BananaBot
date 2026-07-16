@@ -6,6 +6,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     WebAppInfo,
+    CopyTextButton,
 )
 
 from bot.messages import t
@@ -31,6 +32,7 @@ def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("trial")), KeyboardButton(text=t("balance"))],
         [KeyboardButton(text=t("deposit")), KeyboardButton(text=t("support"))],
         [KeyboardButton(text=t("faq")), KeyboardButton(text=t("tutorials"))],
+        [KeyboardButton(text=t("reseller_panel"))],
     ]
     panel_btn = _panel_button()
     if panel_btn:
@@ -47,6 +49,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("admin_payments")), KeyboardButton(text=t("admin_settings"))],
         [KeyboardButton(text=t("admin_faq")), KeyboardButton(text=t("admin_tutorials"))],
         [KeyboardButton(text=t("admin_coupons")), KeyboardButton(text=t("admin_broadcast"))],
+        [KeyboardButton(text=t("admin_reseller"))],
         [KeyboardButton(text=t("back"))],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -57,6 +60,17 @@ def cancel_kb() -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text=t("cancel"))]],
         resize_keyboard=True,
     )
+
+
+def auto_payment_copy_inline(amount_rial: int, card_number: str) -> InlineKeyboardMarkup:
+    """Two 'glass' (inline) buttons under the auto-payment instructions:
+    tapping either just copies the raw value (no thousands separators, no
+    dashes/spaces) to the user's clipboard via Telegram's native copy_text
+    button — nothing sent back to the bot, no round-trip needed."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 کپی مبلغ", copy_text=CopyTextButton(text=str(amount_rial)))],
+        [InlineKeyboardButton(text="📋 کپی شماره کارت", copy_text=CopyTextButton(text=card_number))],
+    ])
 
 
 def back_kb() -> ReplyKeyboardMarkup:
@@ -494,6 +508,149 @@ def users_list_inline(users: list[dict], page: int, total_pages: int, search: st
         rows.append([InlineKeyboardButton(text="❌ پاک کردن جستجو", callback_data="ulist_page:1:")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─── Reseller panel (user side) ───────────────────────────────────────────────
+
+def reseller_plans_inline(plans: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in plans:
+        label = f"{p['name']} — {p['volume_gb']}GB/{p['duration_days']}روزه — {p['price']:,} تومان"
+        buttons.append([
+            InlineKeyboardButton(text=label, callback_data=f"res_plan:{p['id']}")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def reseller_confirm_inline(plan_id: int, renew: bool = False) -> InlineKeyboardMarkup:
+    label = "✅ تأیید و تمدید نمایندگی" if renew else "✅ تأیید و خرید نمایندگی"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=f"res_confirm:{plan_id}")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="res_back_plans")],
+        ]
+    )
+
+def reseller_complete_inline(plan_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🤝 تکمیل خرید/تمدید نمایندگی", callback_data=f"res_confirm:{plan_id}")],
+        ]
+    )
+
+
+def reseller_insufficient_balance_inline(plan_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 پرداخت کارت به کارت", callback_data=f"res_topup:{plan_id}")],
+            [InlineKeyboardButton(text=t("cancel"), callback_data="cancel")],
+        ]
+    )
+
+
+def reseller_status_inline(panel_url: str, expired_or_disabled: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if panel_url.startswith("https://") and not expired_or_disabled:
+        rows.append([InlineKeyboardButton(text="🌐 باز کردن پنل نمایندگی", web_app=WebAppInfo(url=panel_url))])
+    rows.append([InlineKeyboardButton(text="🔁 تمدید / ارتقاء پلن", callback_data="res_renew_start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─── Reseller plans (admin CRUD — mirrors product management) ─────────────────
+
+def reseller_plans_admin_inline(plans: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in plans:
+        status = "✅" if p.get("is_active") else "❌"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{status} {p['name']} — {p['price']:,}",
+                callback_data=f"resplan:{p['id']}",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="➕ افزودن پلن نمایندگی", callback_data="add_resplan")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="📋 لیست نمایندگان", callback_data="resellers_list")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def reseller_plan_actions_inline(plan: dict) -> InlineKeyboardMarkup:
+    plan_id = plan["id"]
+    if plan.get("is_active"):
+        toggle_btn = InlineKeyboardButton(text="🚫 غیرفعال کردن", callback_data=f"resplan_dis:{plan_id}")
+    else:
+        toggle_btn = InlineKeyboardButton(text="✅ فعال کردن", callback_data=f"resplan_en:{plan_id}")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [toggle_btn],
+            [InlineKeyboardButton(text="✏️ ویرایش پلن", callback_data=f"resplan_edit:{plan_id}")],
+            [InlineKeyboardButton(text="🗑 حذف کامل", callback_data=f"resplan_del:{plan_id}")],
+            [InlineKeyboardButton(text=t("back"), callback_data="admin_resplans_back")],
+        ]
+    )
+
+
+def reseller_plan_edit_menu_inline(plan_id: int) -> InlineKeyboardMarkup:
+    fields = [
+        ("نام", "name"),
+        ("حجم (GB)", "volume_gb"),
+        ("مدت (روز)", "duration_days"),
+        ("قیمت", "price"),
+        ("توضیحات", "description"),
+        ("پنل", "panel_id"),
+    ]
+    buttons = [
+        [InlineKeyboardButton(text=f"✏️ {label}", callback_data=f"resplan_editf:{plan_id}:{field}")]
+        for label, field in fields
+    ]
+    buttons.append([InlineKeyboardButton(text=t("back"), callback_data=f"resplan:{plan_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def reseller_plan_delete_confirm_inline(plan_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ بله، حذف کن", callback_data=f"resplan_del_yes:{plan_id}"),
+                InlineKeyboardButton(text="❌ انصراف", callback_data=f"resplan_del_no:{plan_id}"),
+            ]
+        ]
+    )
+
+
+# ─── Resellers list (admin review) ─────────────────────────────────────────────
+
+def resellers_admin_inline(resellers: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for r in resellers:
+        status = "✅" if r.get("status") == "active" else "🚫"
+        uname = f"@{r['username']}" if r.get("username") else r.get("full_name") or r["telegram_id"]
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{status} {uname} — {r['quota_gb']}GB",
+                callback_data=f"resv:{r['id']}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text=t("back"), callback_data="admin_resplans_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def reseller_admin_detail_inline(reseller: dict) -> InlineKeyboardMarkup:
+    rid = reseller["id"]
+    if reseller.get("status") == "active":
+        toggle_btn = InlineKeyboardButton(text="🚫 غیرفعال کردن حساب نماینده", callback_data=f"resv_dis:{rid}")
+    else:
+        toggle_btn = InlineKeyboardButton(text="✅ فعال کردن حساب نماینده", callback_data=f"resv_en:{rid}")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [toggle_btn],
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"resv:{rid}")],
+            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="resellers_list")],
+        ]
+    )
 
 
 def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1) -> InlineKeyboardMarkup:

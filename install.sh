@@ -6,6 +6,23 @@
 
 set -euo pipefail
 
+# ── Force a UTF-8 locale ──────────────────────────────────────────────────────
+# Many minimal VPS images have no locale configured at all (LANG/LC_ALL unset,
+# effectively "C"/"POSIX"). Under that locale, bash's `read` builtin can fail
+# to correctly assemble multi-byte UTF-8 characters typed or pasted at a
+# prompt (e.g. a Persian CARD_HOLDER name) — the bytes get corrupted, install
+# still "succeeds", and the bot crashes much later with a confusing
+# `UnicodeDecodeError` when it tries to read the resulting .env file. Force a
+# UTF-8 locale up front so that never happens, using whichever UTF-8 locale is
+# actually available on this system.
+for _candidate_locale in C.UTF-8 en_US.UTF-8; do
+    if locale -a 2>/dev/null | grep -qi "^${_candidate_locale//./\\.}$"; then
+        export LANG="$_candidate_locale" LC_ALL="$_candidate_locale"
+        break
+    fi
+done
+unset _candidate_locale
+
 # ── Redirect stdin to /dev/tty so read works when piped through curl ─────────
 # When running as: bash <(curl ...), stdin is the script itself, not the terminal.
 exec < /dev/tty
@@ -19,6 +36,7 @@ REPO_URL="https://github.com/mazyarzohdi/BananaBot"
 INSTALL_DIR="/opt/BananaBot"
 WEBAPP_DIR="$INSTALL_DIR/webapp"
 SERVICE_NAME="bananabot"
+WEBHOOK_SERVICE="bananabot-webhook"
 WEBAPP_SERVICE="bananabot-web"
 PYTHON_MIN="3.11"
 VENV_DIR="$INSTALL_DIR/.venv"
@@ -37,6 +55,27 @@ log()    { echo -e "${CYAN}[INFO]${NC}  $*" | tee -a "$LOG_FILE"; }
 success(){ echo -e "${GREEN}[OK]${NC}    $*" | tee -a "$LOG_FILE"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC}  $*" | tee -a "$LOG_FILE"; }
 error()  { echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE"; exit 1; }
+
+# ── Fail loudly, not silently ────────────────────────────────────────────────
+# With `set -e`, any failing command (apt-get, git, pip, ...) kills the script
+# immediately — and since most of those commands redirect their own output
+# into $LOG_FILE, the terminal itself would otherwise show NOTHING beyond the
+# last [INFO] line, leaving no clue what went wrong. This trap catches that
+# and prints the actual error plus the tail of the log before exiting.
+on_error() {
+    local exit_code=$? line_no=$1
+    echo ""
+    echo -e "${RED}[ERROR]${NC} Installation failed (line $line_no, exit code $exit_code)."
+    if [[ -f "$LOG_FILE" ]]; then
+        echo -e "${YELLOW}Last lines of $LOG_FILE:${NC}"
+        tail -n 20 "$LOG_FILE"
+    fi
+    echo ""
+    echo -e "Full log: ${CYAN}$LOG_FILE${NC}"
+    echo -e "Re-run this script after fixing the issue above — it's safe to run again."
+    exit "$exit_code"
+}
+trap 'on_error $LINENO' ERR
 
 print_banner() {
 cat << 'EOF'
@@ -70,7 +109,29 @@ check_os() {
 install_system_deps() {
     log "Installing system dependencies..."
     if command -v apt-get &>/dev/null; then
-        apt-get update -qq
+        # On freshly-created VPS instances, cloud-init or unattended-upgrades
+        # is often still running its own apt/dpkg operations in the
+        # background. If our apt-get runs while that's mid-flight (or if a
+        # previous session got interrupted, e.g. by a reboot), dpkg ends up
+        # in a broken state where EVERY subsequent apt-get call fails with:
+        #   "E: dpkg was interrupted, you must manually run
+        #    'dpkg --configure -a' to correct the problem."
+        # Detect and fix both cases automatically instead of forcing the
+        # admin to SSH back in and run this by hand.
+        if command -v fuser &>/dev/null && [[ -f /var/lib/dpkg/lock-frontend ]]; then
+            local waited=0
+            while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+                [[ "$waited" -eq 0 ]] && log "Another apt/dpkg process is running (e.g. automatic system updates) — waiting for it to finish..."
+                waited=$((waited+5))
+                if [[ "$waited" -gt 300 ]]; then
+                    warn "Still locked after 5 minutes — continuing anyway."
+                    break
+                fi
+                sleep 5
+            done
+        fi
+        dpkg --configure -a >> "$LOG_FILE" 2>&1 || true
+        apt-get update -qq >> "$LOG_FILE" 2>&1
         apt-get install -y -qq python3 python3-pip python3-venv git curl unzip >> "$LOG_FILE" 2>&1
     else
         yum install -y python3 python3-pip git curl unzip >> "$LOG_FILE" 2>&1
@@ -251,6 +312,19 @@ SSL_CERT=${SSL_CERT}
 SSL_KEY=${SSL_KEY}
 EOF
     chmod 600 "$INSTALL_DIR/.env"
+
+    # Catch a corrupted CARD_HOLDER (or any other field) NOW, with a clear
+    # actionable message — instead of the bot crashing much later with a
+    # confusing UnicodeDecodeError from deep inside python-dotenv the first
+    # time it starts.
+    if ! python3 -c "open('$INSTALL_DIR/.env', encoding='utf-8').read()" 2>/dev/null; then
+        warn ".env contains invalid UTF-8 bytes (likely from a Persian/Arabic"
+        warn "field typed at a prompt above getting mangled by the terminal)."
+        warn "The bot WILL crash on startup until this is fixed. After install"
+        warn "finishes, fix it with: manage.sh → option to change the card"
+        warn "info, or edit $INSTALL_DIR/.env directly and re-save it as UTF-8."
+    fi
+
     success "Bot .env file created."
 }
 
@@ -258,6 +332,12 @@ create_data_dir() {
     mkdir -p "$INSTALL_DIR/data"
     chown -R root:root "$INSTALL_DIR"
     success "data/ directory ready."
+}
+
+init_database_schema() {
+    log "Initializing database schema..."
+    "$VENV_DIR/bin/python" "$INSTALL_DIR/db_schema.py" "$INSTALL_DIR/data/bot.db" >> "$LOG_FILE" 2>&1
+    success "Database ready."
 }
 
 create_systemd_service() {
@@ -285,6 +365,39 @@ EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" >> "$LOG_FILE" 2>&1
     success "Bot systemd service created and enabled."
+}
+
+create_webhook_service() {
+    log "Creating auto-payment webhook systemd service..."
+    cat > "/etc/systemd/system/${WEBHOOK_SERVICE}.service" << EOF
+[Unit]
+Description=BananaBot — Auto-Payment Webhook (bank SMS)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+ExecStart=${VENV_DIR}/bin/python payment_webhook_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${WEBHOOK_SERVICE}
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "$WEBHOOK_SERVICE" >> "$LOG_FILE" 2>&1
+    systemctl restart "$WEBHOOK_SERVICE"
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE"; then
+        success "Auto-payment webhook service running (currently disabled until you turn it on and set a secret — see AUTO_PAYMENT_SETUP.md)."
+    else
+        warn "Webhook service failed to start. Check: journalctl -u ${WEBHOOK_SERVICE} -n 30"
+    fi
 }
 
 # ── Web Panel Setup ────────────────────────────────────────────────────────────
@@ -370,7 +483,9 @@ main() {
     collect_config
     write_env_file
     create_data_dir
+    init_database_schema
     create_systemd_service
+    create_webhook_service
     setup_webapp
     start_bot
     print_summary

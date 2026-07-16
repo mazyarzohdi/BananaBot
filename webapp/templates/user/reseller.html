@@ -1,0 +1,176 @@
+{% extends "shared/base.html" %}
+{% block title %}پنل نمایندگی{% endblock %}
+{% block page_title %}پنل نمایندگی{% endblock %}
+{% block nav_reseller %}active{% endblock %}
+{% block content %}
+
+{% if locked %}
+<div class="locked-banner">
+  <i class="fa fa-lock fa-lg"></i>
+  <div>
+    {% if reseller.status != "active" %}
+      حساب نمایندگی شما توسط ادمین غیرفعال شده است. برای اطلاعات بیشتر با پشتیبانی تماس بگیرید.
+    {% else %}
+      مهلت پلن نمایندگی شما به پایان رسیده است. برای ادامه، پلن نمایندگی خود را از داخل ربات تمدید کنید.
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="stats-grid">
+  <div class="stat-card accent-purple">
+    <div class="stat-icon"><i class="fa fa-database"></i></div>
+    <div class="stat-body">
+      <div class="stat-value">{{ reseller.quota_gb|floatformat:1 }} GB</div>
+      <div class="stat-label">حجم کل پلن</div>
+    </div>
+  </div>
+  <div class="stat-card accent-orange">
+    <div class="stat-icon"><i class="fa fa-chart-pie"></i></div>
+    <div class="stat-body">
+      <div class="stat-value">{{ used_gb|floatformat:2 }} GB</div>
+      <div class="stat-label">حجم تخصیص‌یافته</div>
+    </div>
+  </div>
+  <div class="stat-card accent-green">
+    <div class="stat-icon"><i class="fa fa-battery-half"></i></div>
+    <div class="stat-body">
+      <div class="stat-value">{{ remaining_gb|floatformat:2 }} GB</div>
+      <div class="stat-label">حجم باقیمانده</div>
+    </div>
+  </div>
+  <div class="stat-card {% if locked %}accent-red{% else %}accent-blue{% endif %}">
+    <div class="stat-icon"><i class="fa fa-clock"></i></div>
+    <div class="stat-body">
+      <div class="stat-value" style="font-size:16px">{{ expires_at_text }}</div>
+      <div class="stat-label">انقضای پلن نمایندگی</div>
+    </div>
+  </div>
+</div>
+
+<div class="card mt-3">
+  <div class="quota-bar-track">
+    <div class="quota-bar-fill {% if remaining_gb <= 0 %}danger{% endif %}"
+         style="width: {% widthratio used_gb reseller.quota_gb 100 %}%"></div>
+  </div>
+  <div class="meta">پلن: {{ reseller.plan_name|default:"—" }}</div>
+</div>
+
+{% if not locked %}
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-plus"></i> ساخت کانفیگ جدید</h2>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="create_config"/>
+    <div class="grid-2">
+      <div class="form-group">
+        <label>نام دلخواه (اختیاری)</label>
+        <input type="text" name="label" class="input" placeholder="مثلا: مشتری ۱"/>
+      </div>
+      <div class="form-group">
+        <label>حجم (GB) — حداکثر {{ remaining_gb|floatformat:2 }} GB</label>
+        <input type="number" step="0.1" min="0.1" max="{{ remaining_gb|floatformat:2 }}" name="volume_gb" class="input" required/>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>مدت (روز)</label>
+      <input type="number" min="1" name="duration_days" class="input" required/>
+      <small>مدت کانفیگ نمی‌تواند از تاریخ انقضای پلن نمایندگی شما بیشتر باشد.</small>
+    </div>
+    <button type="submit" class="btn btn-primary w-full"><i class="fa fa-plus"></i> ساخت کانفیگ</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-server"></i> کانفیگ‌های من ({{ configs|length }})</h2>
+
+  {% if configs %}
+    {% for c in configs %}
+    <div class="config-card">
+      <div class="config-card-head">
+        <div class="config-card-title">
+          {% if c.status == "active" %}<span class="badge-green">فعال</span>
+          {% elif c.status == "disabled" %}<span class="badge-orange">غیرفعال موقت</span>
+          {% else %}<span class="badge-red">{{ c.status }}</span>{% endif %}
+          {{ c.label|default:c.email }}
+        </div>
+        <div class="meta">{{ c.volume_gb }} GB</div>
+      </div>
+      <div class="service-detail"><i class="fa fa-envelope"></i> <code>{{ c.email }}</code></div>
+      <div class="service-detail"><i class="fa fa-calendar-check"></i> انقضا: {{ c.expiry_display }}</div>
+
+      {% if c.usage_used_gb is not None %}
+        <div class="service-detail">
+          <i class="fa fa-chart-pie"></i>
+          مصرف‌شده: {{ c.usage_used_gb|floatformat:2 }} GB از {{ c.volume_gb }} GB
+          {% if c.usage_remaining_gb is not None %}— باقیمانده: {{ c.usage_remaining_gb|floatformat:2 }} GB{% endif %}
+        </div>
+        <div class="quota-bar-track">
+          <div class="quota-bar-fill {% if c.usage_percent >= 100 %}danger{% elif c.usage_percent >= 80 %}warn{% endif %}"
+               style="width: {{ c.usage_percent }}%"></div>
+        </div>
+      {% else %}
+        <div class="service-detail"><i class="fa fa-triangle-exclamation"></i> دریافت میزان مصرف از پنل ممکن نشد.</div>
+      {% endif %}
+
+      {% if c.sub_link %}
+        <a href="{{ c.sub_link }}" class="btn btn-sm btn-primary mt-2" target="_blank"><i class="fa fa-link"></i> لینک سابسکریپشن</a>
+      {% endif %}
+      {% if c.config_link %}
+        <button type="button" class="btn btn-sm btn-ghost mt-2" onclick="navigator.clipboard.writeText('{{ c.config_link|escapejs }}')">
+          <i class="fa fa-copy"></i> کپی کانفیگ
+        </button>
+      {% endif %}
+
+      <hr class="divider"/>
+
+      <div class="config-form-row">
+        <form method="post" style="display:inline-flex; gap:8px; align-items:center;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="rename_config"/>
+          <input type="hidden" name="config_id" value="{{ c.id }}"/>
+          <input type="text" name="label" class="input" placeholder="نام جدید" value="{{ c.label }}"/>
+          <button type="submit" class="btn btn-sm btn-ghost"><i class="fa fa-tag"></i> ذخیره نام</button>
+        </form>
+      </div>
+
+      <div class="config-form-row mt-2">
+        <form method="post" style="display:inline-flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="update_config"/>
+          <input type="hidden" name="config_id" value="{{ c.id }}"/>
+          <input type="number" step="0.1" min="0.1" name="volume_gb" class="input" placeholder="حجم جدید (GB)" required/>
+          <input type="number" min="1" name="duration_days" class="input" placeholder="مدت جدید (روز)" required/>
+          <button type="submit" class="btn btn-sm btn-success"><i class="fa fa-rotate"></i> تمدید / ویرایش</button>
+        </form>
+      </div>
+
+      <div class="btn-group mt-2">
+        <form method="post" onsubmit="return confirm('{% if c.status == "active" %}غیرفعال‌سازی موقت این کانفیگ؟{% else %}فعال‌سازی مجدد این کانفیگ؟{% endif %}')">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="toggle_config"/>
+          <input type="hidden" name="config_id" value="{{ c.id }}"/>
+          {% if c.status == "active" %}
+            <button type="submit" class="btn btn-sm btn-warning"><i class="fa fa-pause"></i> غیرفعال موقت</button>
+          {% else %}
+            <button type="submit" class="btn btn-sm btn-success"><i class="fa fa-play"></i> فعال‌سازی</button>
+          {% endif %}
+        </form>
+        <form method="post" onsubmit="return confirm('حذف کامل این کانفیگ؟ فقط حجمِ استفاده‌نشده به حساب شما برمی‌گردد و حجم مصرف‌شده برای همیشه از سقف نمایندگی‌تان کسر می‌ماند.')">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="delete_config"/>
+          <input type="hidden" name="config_id" value="{{ c.id }}"/>
+          <button type="submit" class="btn btn-sm btn-danger"><i class="fa fa-trash"></i> حذف کامل</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-card">
+      <i class="fa fa-box-open fa-3x"></i>
+      <p>هنوز کانفیگی نساخته‌اید.</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

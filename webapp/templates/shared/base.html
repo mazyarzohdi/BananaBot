@@ -55,6 +55,11 @@
       <a href="{% url 'panel:user_wallet' %}" class="nav-item {% block nav_wallet %}{% endblock %}">
         <i class="fa fa-wallet"></i> کیف پول
       </a>
+      {% if is_reseller %}
+      <a href="{% url 'panel:reseller_panel' %}" class="nav-item {% block nav_reseller %}{% endblock %}">
+        <i class="fa fa-people-arrows"></i> پنل نمایندگی
+      </a>
+      {% endif %}
       {% endif %}
 
       {% if is_admin %}
@@ -70,6 +75,12 @@
       </a>
       <a href="{% url 'panel:admin_panels' %}" class="nav-item {% block nav_panels %}{% endblock %}">
         <i class="fa fa-desktop"></i> پنل‌ها
+      </a>
+      <a href="{% url 'panel:admin_reseller_plans' %}" class="nav-item {% block nav_reseller_plans %}{% endblock %}">
+        <i class="fa fa-people-arrows"></i> پلن‌های نمایندگی
+      </a>
+      <a href="{% url 'panel:admin_resellers' %}" class="nav-item {% block nav_admin_resellers %}{% endblock %}">
+        <i class="fa fa-user-tie"></i> نمایندگان
       </a>
       <div class="nav-group-label">تنظیمات</div>
       <a href="{% url 'panel:admin_settings' %}" class="nav-item {% block nav_settings %}{% endblock %}">

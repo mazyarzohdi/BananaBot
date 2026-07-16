@@ -1,0 +1,52 @@
+{% extends "shared/base.html" %}
+{% block title %}{% if plan %}ویرایش پلن نمایندگی{% else %}افزودن پلن نمایندگی{% endif %}{% endblock %}
+{% block page_title %}{% if plan %}ویرایش پلن نمایندگی{% else %}افزودن پلن نمایندگی{% endif %}{% endblock %}
+{% block nav_reseller_plans %}active{% endblock %}
+{% block content %}
+
+<div class="card">
+  <form method="post">
+    {% csrf_token %}
+    <div class="form-group">
+      <label>نام پلن</label>
+      <input type="text" name="name" class="input" value="{{ plan.name|default:'' }}" required/>
+    </div>
+
+    <div class="form-group">
+      <label>پنل</label>
+      <select name="panel_id" class="input" required>
+        {% for pn in panels %}
+        <option value="{{ pn.id }}" {% if plan.panel_id == pn.id %}selected{% endif %}>{{ pn.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="grid-2">
+      <div class="form-group">
+        <label>حجم کل (GB)</label>
+        <input type="number" step="0.1" min="0.1" name="volume_gb" class="input" value="{{ plan.volume_gb|default:'' }}" required/>
+      </div>
+      <div class="form-group">
+        <label>مدت اعتبار (روز)</label>
+        <input type="number" min="1" name="duration_days" class="input" value="{{ plan.duration_days|default:'' }}" required/>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>قیمت (تومان)</label>
+      <input type="number" min="0" name="price" class="input" value="{{ plan.price|default:'' }}" required/>
+    </div>
+
+    <div class="form-group">
+      <label>توضیحات (اختیاری)</label>
+      <textarea name="description" class="input" rows="3">{{ plan.description|default:'' }}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label><input type="checkbox" name="is_active" {% if not plan or plan.is_active %}checked{% endif %}/> فعال باشد</label>
+    </div>
+
+    <button type="submit" class="btn btn-primary w-full"><i class="fa fa-check"></i> ذخیره</button>
+  </form>
+</div>
+{% endblock %}

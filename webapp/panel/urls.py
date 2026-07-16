@@ -17,6 +17,7 @@ urlpatterns = [
     path("services/", views.user_services, name="user_services"),
     path("buy/",      views.user_buy,      name="user_buy"),
     path("wallet/",   views.user_wallet,   name="user_wallet"),
+    path("reseller/", views.reseller_panel, name="reseller_panel"),
 
     # Admin — users
     path("admin/users/",                      views.admin_users,       name="admin_users"),
@@ -37,6 +38,16 @@ urlpatterns = [
     path("admin/payments/",                     views.admin_payments,        name="admin_payments"),
     path("admin/payments/<int:payment_id>/",    views.admin_payment_detail,  name="admin_payment_detail"),
     path("admin/payments/<int:payment_id>/receipt/", views.admin_payment_receipt, name="admin_payment_receipt"),
+
+    # Admin — reseller plans
+    path("admin/reseller-plans/",                       views.admin_reseller_plans,      name="admin_reseller_plans"),
+    path("admin/reseller-plans/add/",                    views.admin_reseller_plan_edit,  name="admin_reseller_plan_add"),
+    path("admin/reseller-plans/<int:plan_id>/edit/",     views.admin_reseller_plan_edit,  name="admin_reseller_plan_edit"),
+    path("admin/reseller-plans/<int:plan_id>/delete/",   views.admin_reseller_plan_delete, name="admin_reseller_plan_delete"),
+
+    # Admin — resellers review
+    path("admin/resellers/",                    views.admin_resellers,       name="admin_resellers"),
+    path("admin/resellers/<int:reseller_id>/",  views.admin_reseller_detail, name="admin_reseller_detail"),
 
     # Admin — settings
     path("admin/settings/", views.admin_settings, name="admin_settings"),

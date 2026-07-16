@@ -243,6 +243,172 @@ def delete_subscription_record(sub_id: int):
         conn.execute("UPDATE subscriptions SET status='deleted' WHERE id=?", (sub_id,))
 
 
+# ── Reseller plans ────────────────────────────────────────────────────────────
+
+def get_reseller_plans(active_only: bool = True) -> list[dict]:
+    with get_conn() as conn:
+        q = (
+            "SELECT rp.*, pn.name as panel_name FROM reseller_plans rp "
+            "JOIN panels pn ON rp.panel_id = pn.id"
+        )
+        if active_only:
+            q += " WHERE rp.is_active = 1"
+        q += " ORDER BY rp.price"
+        rows = conn.execute(q).fetchall()
+    return rows_to_list(rows)
+
+
+def get_reseller_plan(plan_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT rp.*, pn.name as panel_name FROM reseller_plans rp "
+            "JOIN panels pn ON rp.panel_id = pn.id WHERE rp.id = ?",
+            (plan_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def add_reseller_plan(name, panel_id, volume_gb, duration_days, price, description=""):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reseller_plans (name, panel_id, volume_gb, duration_days, price, description) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, panel_id, volume_gb, duration_days, price, description),
+        )
+        return cur.lastrowid
+
+
+def update_reseller_plan(plan_id: int, **fields):
+    allowed = {"name", "panel_id", "volume_gb", "duration_days", "price", "is_active", "description"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    cols = ", ".join(f"{k}=?" for k in updates)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE reseller_plans SET {cols} WHERE id=?", (*updates.values(), plan_id))
+
+
+def delete_reseller_plan(plan_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM reseller_plans WHERE id=?", (plan_id,))
+
+
+# ── Resellers ─────────────────────────────────────────────────────────────────
+
+def get_reseller_by_user_id(user_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT r.*, pn.name as panel_name, pn.url as panel_url, pn.api_token, "
+            "pn.inbound_ids, pn.on_hold, pn.sub_link_template, rp.name as plan_name "
+            "FROM resellers r JOIN panels pn ON r.panel_id = pn.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "WHERE r.user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def get_reseller(reseller_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT r.*, pn.name as panel_name, pn.url as panel_url, pn.api_token, "
+            "pn.inbound_ids, pn.on_hold, pn.sub_link_template, rp.name as plan_name, "
+            "u.telegram_id, u.username, u.full_name "
+            "FROM resellers r JOIN panels pn ON r.panel_id = pn.id "
+            "JOIN users u ON r.user_id = u.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "WHERE r.id = ?",
+            (reseller_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def get_all_resellers() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name "
+            "FROM resellers r JOIN users u ON r.user_id = u.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "ORDER BY r.id DESC"
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def set_reseller_status(reseller_id: int, status: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE resellers SET status=? WHERE id=?", (status, reseller_id))
+
+
+def get_reseller_used_gb(reseller_id: int) -> float:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM("
+            "  CASE WHEN status = 'deleted' THEN consumed_gb ELSE volume_gb + consumed_gb END"
+            "), 0) as used "
+            "FROM reseller_configs WHERE reseller_id = ?",
+            (reseller_id,),
+        ).fetchone()
+    return row["used"] if row else 0.0
+
+
+def get_reseller_configs(reseller_id: int, include_deleted: bool = False) -> list[dict]:
+    with get_conn() as conn:
+        q = "SELECT * FROM reseller_configs WHERE reseller_id = ?"
+        if not include_deleted:
+            q += " AND status != 'deleted'"
+        q += " ORDER BY id DESC"
+        rows = conn.execute(q, (reseller_id,)).fetchall()
+    return rows_to_list(rows)
+
+
+def get_reseller_config(config_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT rc.*, r.user_id, r.panel_id, r.quota_gb, r.expires_at as reseller_expires_at, "
+            "r.status as reseller_status, pn.url as panel_url, pn.api_token, pn.inbound_ids, "
+            "pn.sub_link_template, pn.on_hold "
+            "FROM reseller_configs rc "
+            "JOIN resellers r ON rc.reseller_id = r.id "
+            "JOIN panels pn ON r.panel_id = pn.id "
+            "WHERE rc.id = ?",
+            (config_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def add_reseller_config(**data) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reseller_configs "
+            "(reseller_id, label, email, sub_id, volume_gb, expiry_time, "
+            "config_link, config_links, sub_link, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data["reseller_id"],
+                data.get("label", ""),
+                data["email"],
+                data.get("sub_id", ""),
+                data["volume_gb"],
+                data.get("expiry_time", 0),
+                data.get("config_link", ""),
+                data.get("config_links", "[]"),
+                data.get("sub_link", ""),
+                data.get("status", "active"),
+            ),
+        )
+        return cur.lastrowid
+
+
+def update_reseller_config(config_id: int, **fields):
+    allowed = {"label", "volume_gb", "expiry_time", "config_link", "config_links", "sub_link", "status", "sub_id", "consumed_gb"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    cols = ", ".join(f"{k}=?" for k in updates)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE reseller_configs SET {cols} WHERE id=?", (*updates.values(), config_id))
+
+
 # ── Payments ──────────────────────────────────────────────────────────────────
 
 def get_pending_payments() -> list[dict]:
@@ -281,11 +447,11 @@ def get_payment(payment_id: int) -> dict | None:
     return row_to_dict(row)
 
 
-def create_payment(user_id: int, amount: int, payment_method: str = "card") -> int:
+def create_payment(user_id: int, amount: int, payment_method: str = "card", reseller_plan_id: int | None = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO payments (user_id, amount, payment_method) VALUES (?, ?, ?)",
-            (user_id, amount, payment_method),
+            "INSERT INTO payments (user_id, amount, payment_method, reseller_plan_id) VALUES (?, ?, ?, ?)",
+            (user_id, amount, payment_method, reseller_plan_id),
         )
         return cur.lastrowid
 

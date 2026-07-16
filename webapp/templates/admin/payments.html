@@ -30,7 +30,10 @@
         <td>
           {% if p.status == 'pending' %}<span class="badge-orange">در انتظار</span>
           {% elif p.status == 'approved' %}<span class="badge-green">تأیید</span>
-          {% else %}<span class="badge-red">رد</span>{% endif %}
+          {% elif p.status == 'rejected' %}<span class="badge-red">رد</span>
+          {% elif p.status == 'cancelled' %}<span class="badge-red">لغوشده</span>
+          {% elif p.status == 'expired' %}<span class="badge-red">منقضی</span>
+          {% else %}<span class="badge-red">{{ p.status }}</span>{% endif %}
         </td>
         <td>{{ p.payment_method }}</td>
         <td><small>{{ p.created_at }}</small></td>

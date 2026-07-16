@@ -6,11 +6,24 @@
 
 set -euo pipefail
 
+# ── Force a UTF-8 locale ──────────────────────────────────────────────────────
+# See install.sh for the full explanation: without this, `read` can corrupt
+# multi-byte Persian/Arabic text typed at a prompt on systems with no locale
+# configured, silently writing broken bytes into .env.
+for _candidate_locale in C.UTF-8 en_US.UTF-8; do
+    if locale -a 2>/dev/null | grep -qi "^${_candidate_locale//./\\.}$"; then
+        export LANG="$_candidate_locale" LC_ALL="$_candidate_locale"
+        break
+    fi
+done
+unset _candidate_locale
+
 # ------------------------------------------------------------
 INSTALL_DIR="/opt/BananaBot"
 WEBAPP_DIR="$INSTALL_DIR/webapp"
 SERVICE_NAME="bananabot"
 WEBAPP_SERVICE="bananabot-web"
+WEBHOOK_SERVICE="bananabot-webhook"
 ENV_FILE="$INSTALL_DIR/.env"
 WEBAPP_ENV="$WEBAPP_DIR/.env"
 DB_PATH="$INSTALL_DIR/data/bot.db"
@@ -123,6 +136,10 @@ main_menu() {
     echo "   [15] ■  Stop Web Panel"
     echo "   [16] ↺  Restart Web Panel"
     echo "   [17] ⚙️  Setup / Reconfigure Web Panel (domain, port, path, SSL)"
+    echo ""
+    echo -e "  ${BOLD}━━━ Auto-Payment Webhook (Bank SMS) ━━━━━━━━━━━${NC}"
+    echo "   [21] ℹ️  Webhook Status & Info"
+    echo "   [22] ↺  Restart Webhook Service"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -272,6 +289,9 @@ action_change_card() {
         echo -e "${CYAN}New card holder:${NC}"
         read -rp "  CARD_HOLDER: " NEW_HOLDER
         set_env_value "CARD_HOLDER" "$NEW_HOLDER"
+        if ! python3 -c "open('$ENV_FILE', encoding='utf-8').read()" 2>/dev/null; then
+            error ".env now contains invalid UTF-8 bytes — the bot will crash on restart. Try entering the card holder name again."
+        fi
         success "Card information saved."
         echo -n "  Restart the bot? [y/N]: "
         read -r RESTART_CHOICE
@@ -325,7 +345,55 @@ action_show_config() {
     echo -e "  REQUIRED_CHANNEL:  ${CYAN}$(get_env_value 'REQUIRED_CHANNEL')${NC}"
     echo -e "  PANEL_URL:         ${CYAN}$(get_env_value 'PANEL_URL')${NC}"
     echo ""
+    if [[ -f "$DB_PATH" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        local ap_enabled ap_port
+        ap_enabled=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='auto_payment_enabled'" 2>/dev/null)
+        ap_port=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='auto_payment_port'" 2>/dev/null)
+        echo -e "  AUTO_PAYMENT:      ${CYAN}$([[ "$ap_enabled" == "1" ]] && echo enabled || echo disabled)${NC}"
+        echo -e "  AUTO_PAYMENT_PORT: ${CYAN}${ap_port:-8100}${NC}"
+        echo ""
+    fi
     read -rp "  Press Enter to return..."
+}
+
+# ------------------------------------------------------------
+action_webhook_info() {
+    echo ""
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        success "Webhook service is running."
+    else
+        warn "Webhook service is NOT running."
+    fi
+    if [[ -f "$DB_PATH" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        local ap_enabled ap_port ap_secret
+        ap_enabled=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='auto_payment_enabled'" 2>/dev/null)
+        ap_port=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='auto_payment_port'" 2>/dev/null)
+        ap_secret=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='auto_payment_secret'" 2>/dev/null)
+        echo -e "  Auto-payment enabled: ${CYAN}$([[ "$ap_enabled" == "1" ]] && echo yes || echo no)${NC}"
+        echo -e "  Listening port:       ${CYAN}${ap_port:-8100}${NC}"
+        echo -e "  Secret configured:    ${CYAN}$([[ -n "$ap_secret" ]] && echo yes || echo no)${NC}"
+    fi
+    echo ""
+    echo -e "  Both the enable/disable toggle and the port are changed from inside the bot itself:"
+    echo -e "  ${CYAN}Admin menu → ⚙️ Bot Settings → 🤖 Auto Payment / 🔑 Webhook Secret / 🔌 Webhook Port${NC}"
+    echo -e "  Changing the port automatically restarts this service."
+    echo ""
+    echo -e "  Recent logs:"
+    journalctl -u "$WEBHOOK_SERVICE" -n 15 --no-pager 2>/dev/null
+    echo ""
+    read -rp "  Press Enter to return..."
+}
+
+action_webhook_restart() {
+    echo ""
+    log "Restarting webhook service..."
+    systemctl restart "$WEBHOOK_SERVICE"
+    sleep 1
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE"; then
+        success "Webhook service restarted."
+    else
+        error "Webhook service failed to restart. Check: journalctl -u $WEBHOOK_SERVICE -n 30"
+    fi
 }
 
 # ------------------------------------------------------------
@@ -347,11 +415,50 @@ action_update() {
     # به‌روزرسانی کتابخانه‌ها
     log "Updating Python libraries..."
     "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
+    log "Checking/repairing database schema..."
+    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+
+    if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
+        log "Setting up the auto-payment webhook service (new since your last install)..."
+        cat > "/etc/systemd/system/${WEBHOOK_SERVICE}.service" << EOF
+[Unit]
+Description=BananaBot — Auto-Payment Webhook (bank SMS)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+ExecStart=${INSTALL_DIR}/.venv/bin/python payment_webhook_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${WEBHOOK_SERVICE}
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable "$WEBHOOK_SERVICE" >> "$LOG_FILE" 2>&1
+        systemctl start "$WEBHOOK_SERVICE"
+        success "Auto-payment webhook service created (see menu option 21 for status, and AUTO_PAYMENT_SETUP.md to configure)."
+    fi
+
     success "Update completed."
     echo -n "  Restart the bot? [y/N]: "
     read -r RESTART_CHOICE
     if [[ "$RESTART_CHOICE" =~ ^[yY]$ ]]; then
         action_restart
+    fi
+    if systemctl list-unit-files "${WEBHOOK_SERVICE}.service" >/dev/null 2>&1; then
+        echo -n "  Restart the auto-payment webhook service too? [y/N]: "
+        read -r WEBHOOK_RESTART_CHOICE
+        if [[ "$WEBHOOK_RESTART_CHOICE" =~ ^[yY]$ ]]; then
+            action_webhook_restart
+        fi
     fi
 }
 
@@ -368,12 +475,18 @@ action_uninstall() {
         return
     fi
 
-    log "Stopping service..."
+    log "Stopping services..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    systemctl stop "$WEBHOOK_SERVICE" 2>/dev/null || true
+    systemctl disable "$WEBHOOK_SERVICE" 2>/dev/null || true
+    systemctl stop "$WEBAPP_SERVICE" 2>/dev/null || true
+    systemctl disable "$WEBAPP_SERVICE" 2>/dev/null || true
 
-    log "Removing systemd service file..."
+    log "Removing systemd service files..."
     rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+    rm -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service"
+    rm -f "/etc/systemd/system/${WEBAPP_SERVICE}.service"
     systemctl daemon-reload
 
     log "Removing project files..."
@@ -704,11 +817,13 @@ run() {
             15) action_webapp_stop ;;
             16) action_webapp_restart ;;
             17) action_webapp_configure ;;
+            21) action_webhook_info ;;
+            22) action_webhook_restart ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
 
-        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" ]]; then
+        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" && "$CHOICE" != "21" ]]; then
             echo ""
             read -rp "  Press Enter to return to menu..."
         fi

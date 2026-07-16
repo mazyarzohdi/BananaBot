@@ -30,7 +30,7 @@ class SubscriptionService:
         if not panel:
             raise ValueError("پنل مرتبط با محصول پیدا نشد")
 
-        inbound_ids = __import__("json").loads(panel["inbound_ids"])
+        inbound_ids = json.loads(panel["inbound_ids"])
         if not inbound_ids:
             raise ValueError("Inbound برای پنل تنظیم نشده")
 

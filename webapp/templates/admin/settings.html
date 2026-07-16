@@ -4,6 +4,32 @@
 {% block nav_settings %}active{% endblock %}
 {% block content %}
 <div class="card mb-3" style="max-width:700px">
+  <h2 class="card-title"><i class="fa fa-robot"></i> تایید خودکار پرداخت (پیامک بانکی)</h2>
+  <div class="detail-row">
+    <span>وضعیت فعلی</span>
+    {% if auto_payment.enabled %}<span class="badge-green">فعال</span>
+    {% else %}<span class="badge-orange">غیرفعال</span>{% endif %}
+  </div>
+  <div class="detail-row">
+    <span>کلید امنیتی وبهوک</span>
+    {% if auto_payment.secret_set %}<span class="badge-green">تنظیم شده</span>
+    {% else %}<span class="badge-red">تنظیم نشده</span>{% endif %}
+  </div>
+  <div class="detail-row"><span>آدرس وبهوک (سرویس مستقل، جدا از این پنل)</span></div>
+  <div class="card-number" style="font-size:14px; word-break:break-all;">
+    http://{{ auto_payment.host }}:{{ auto_payment.port }}/webhook/payment/
+  </div>
+  <p class="wallet-note">
+    <i class="fa fa-info-circle"></i>
+    این وبهوک روی یک سرویس و پورت کاملاً جدا از پنل وب اجرا می‌شود (سرویس <code>bananabot-webhook</code>).
+    روشن/خاموش‌کردن، تنظیم کلید امنیتی، و تغییر پورت همه از داخل خودِ ربات تلگرام انجام می‌شود:
+    منوی ادمین ← ⚙️ تنظیمات ربات ← 🤖 تایید خودکار پرداخت / 🔑 کلید امنیتی / 🔌 پورت وبهوک.
+    وضعیت زنده‌ی این سرویس را می‌توانید از <code>manage.sh</code> (گزینه‌ی Webhook Status & Info)
+    ببینید. راهنمای کامل راه‌اندازی در فایل AUTO_PAYMENT_SETUP.md پروژه موجود است.
+  </p>
+</div>
+
+<div class="card mb-3" style="max-width:700px">
   <h2 class="card-title"><i class="fa fa-sack-dollar"></i> ویرایش دستی کل درآمد</h2>
   <p class="wallet-note">
     <i class="fa fa-info-circle"></i>

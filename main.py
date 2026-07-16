@@ -22,6 +22,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+PAYMENT_EXPIRY_CHECK_INTERVAL_SECONDS = 60
+
+
+async def _expire_payments_loop(bot: Bot, db):
+    """Auto-payments (card-to-card top-ups matched via bank SMS) are only
+    valid for a 20-minute window (see bot/handlers/user.py, where that
+    window is set at creation time). This periodically cancels any that
+    ran out the clock without a matching SMS ever arriving, and lets the
+    user know instead of leaving them wondering why their balance never
+    got topped up."""
+    while True:
+        try:
+            expired = await db.expire_stale_payments()
+            for payment in expired:
+                user = await db._fetchone(
+                    "SELECT telegram_id FROM users WHERE id = ?", (payment["user_id"],)
+                )
+                if user and user.get("telegram_id"):
+                    try:
+                        await bot.send_message(
+                            user["telegram_id"],
+                            "⏰ مهلت ۲۰ دقیقه‌ای این پرداخت به پایان رسید و درخواست به‌صورت خودکار لغو شد.\n\n"
+                            "اگر مبلغ را واریز کرده‌اید ولی موجودی شما شارژ نشد، لطفاً با پشتیبانی تماس بگیرید. "
+                            "در غیر این صورت می‌توانید از منوی اصلی دوباره اقدام کنید.",
+                        )
+                    except Exception:
+                        pass  # bot blocked by user, etc. — not fatal
+        except Exception:
+            logger.exception("Payment expiry loop failed")
+        await asyncio.sleep(PAYMENT_EXPIRY_CHECK_INTERVAL_SECONDS)
+
 
 async def main():
     settings = get_settings()
@@ -85,6 +116,7 @@ async def main():
         )
 
     logger.info("Bot starting...")
+    asyncio.create_task(_expire_payments_loop(bot, db))
     await dp.start_polling(bot)
 
 

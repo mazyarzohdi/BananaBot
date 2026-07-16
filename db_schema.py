@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS payments (
     order_id INTEGER,
     product_id INTEGER,
     renew_sub_id INTEGER,
+    reseller_plan_id INTEGER,
     amount INTEGER NOT NULL,
     status TEXT DEFAULT 'pending',
     payment_method TEXT DEFAULT 'card',
@@ -113,6 +114,8 @@ CREATE TABLE IF NOT EXISTS payments (
     admin_note TEXT,
     handled_by INTEGER,
     notif_chats TEXT DEFAULT '[]',
+    expected_amount INTEGER DEFAULT NULL,
+    expires_at TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
@@ -145,6 +148,50 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS reseller_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    panel_id INTEGER NOT NULL,
+    volume_gb REAL NOT NULL,
+    duration_days INTEGER NOT NULL,
+    price INTEGER NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    description TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (panel_id) REFERENCES panels(id)
+);
+
+CREATE TABLE IF NOT EXISTS resellers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE NOT NULL,
+    plan_id INTEGER,
+    panel_id INTEGER NOT NULL,
+    quota_gb REAL NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (plan_id) REFERENCES reseller_plans(id),
+    FOREIGN KEY (panel_id) REFERENCES panels(id)
+);
+
+CREATE TABLE IF NOT EXISTS reseller_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reseller_id INTEGER NOT NULL,
+    label TEXT DEFAULT '',
+    email TEXT NOT NULL,
+    sub_id TEXT,
+    volume_gb REAL NOT NULL,
+    expiry_time INTEGER DEFAULT 0,
+    config_link TEXT,
+    config_links TEXT DEFAULT '[]',
+    sub_link TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    consumed_gb REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (reseller_id) REFERENCES resellers(id)
+);
+
 CREATE TABLE IF NOT EXISTS faq (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     question TEXT NOT NULL,
@@ -173,6 +220,9 @@ DEFAULT_SETTINGS = {
     "channel_required": "",
     "channel_invite_link": "",
     "min_deposit": "10000",
+    "auto_payment_enabled": "0",
+    "auto_payment_secret": "",
+    "auto_payment_port": "8100",
 }
 
 # Historical migrations that predate the generic column-reconciler below, or
@@ -246,6 +296,16 @@ def reconcile(db_path: str) -> dict:
 
     conn = sqlite3.connect(db_path)
     try:
+        # Three separate processes now touch this file concurrently (the
+        # bot, the web panel, and the auto-payment webhook server). The
+        # default SQLite journal mode blocks readers while a write is in
+        # progress (and vice versa), which gets more likely to cause
+        # "database is locked" errors as concurrent access increases.
+        # WAL mode lets reads and writes proceed concurrently in the
+        # common case. This is stored in the DB file itself, so it only
+        # really needs to succeed once, but is cheap/idempotent to repeat.
+        conn.execute("PRAGMA journal_mode=WAL")
+
         existing_tables = {
             row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"

@@ -1,7 +1,9 @@
 """User-facing bot handlers."""
 
-import json
 import logging
+import random
+import time
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -10,12 +12,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards import (
-    admin_coupons_inline,
-    back_kb,
+    auto_payment_copy_inline,
     balance_inline,
     cancel_kb,
     channel_required_inline,
-    complete_purchase_inline,
     confirm_buy_inline,
     faq_inline,
     insufficient_balance_inline,
@@ -24,8 +24,11 @@ from bot.keyboards import (
     panels_buy_inline,
     payment_actions_inline,
     products_by_panel_inline,
-    products_inline,
     renew_confirm_inline,
+    reseller_confirm_inline,
+    reseller_insufficient_balance_inline,
+    reseller_plans_inline,
+    reseller_status_inline,
     service_actions_inline,
     services_inline,
     tutorials_inline,
@@ -57,6 +60,90 @@ async def check_channel(member_check, user_id: int, channel: str) -> bool:
         return member.status in ("member", "administrator", "creator")
     except Exception:
         return False
+
+
+AUTO_PAYMENT_EXPIRY_MINUTES = 20
+
+
+def _expiry_timestamp() -> str:
+    """20 minutes from now, formatted to match SQLite's datetime('now')
+    (UTC, 'YYYY-MM-DD HH:MM:SS') so the two can be compared as strings."""
+    dt = datetime.now(timezone.utc) + timedelta(minutes=AUTO_PAYMENT_EXPIRY_MINUTES)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _generate_auto_payment_rial(db, base_amount_toman: int) -> int:
+    """Turns a base amount in Toman (e.g. 65,000 تومان) into a unique RIAL
+    amount the user must transfer instead (e.g. 656,755 ریال): converts to
+    Rial (×10, since 1 Toman = 10 Rial) and replaces the last 4 digits with
+    a random verification code, so the bank-SMS webhook can match this
+    exact payment by amount alone, without the user typing any reference
+    number. Retries if another currently-pending auto-payment happens to
+    be expecting the exact same amount already."""
+    base_rial = base_amount_toman * 10
+    base_rial_truncated = (base_rial // 10000) * 10000
+    for _ in range(50):
+        code = random.randint(0, 9999)
+        candidate = base_rial_truncated + code
+        if not await db.expected_amount_taken(candidate):
+            return candidate
+    return base_rial_truncated + random.randint(0, 9999)  # extremely unlikely fallback
+
+
+async def _send_card_payment_instructions(
+    answer, db, user_id: int, base_amount: int, *,
+    product_id: int | None = None, renew_sub_id: int | None = None,
+    reseller_plan_id: int | None = None,
+) -> int:
+    """Creates the payment record and shows the user what to pay —
+    branching on whether auto-payment (bank SMS matching) is currently
+    enabled. `answer` is either `message.answer` or `callback.message.answer`.
+    Returns the created payment's id."""
+    settings = get_settings()
+    card = settings.card_number or await db.get_setting("card_number", "")
+    holder = settings.card_holder or await db.get_setting("card_holder", "")
+
+    auto_enabled = (await db.get_setting("auto_payment_enabled", "0")) == "1"
+
+    if auto_enabled:
+        pay_amount_rial = await _generate_auto_payment_rial(db, base_amount)
+        expires_at = _expiry_timestamp()
+        payment_id = await db.create_payment(
+            user_id, base_amount, "card", product_id=product_id, renew_sub_id=renew_sub_id,
+            reseller_plan_id=reseller_plan_id,
+            expected_amount=pay_amount_rial, expires_at=expires_at,
+        )
+        await answer(
+            f"💳 لطفاً دقیقاً مبلغ زیر را به شماره کارت زیر واریز کنید:\n\n"
+            f"مبلغ: *{pay_amount_rial:,} ریال*\n"
+            f"شماره کارت: `{card}`\n"
+            f"به نام: {holder}\n\n"
+            f"⚠️ *مبلغ باید دقیقاً همین عدد باشد، نه یک ریال کمتر یا بیشتر.* "
+            f"چهار رقم آخر مبلغ، شناسه‌ی پرداخت شماست و برای شناسایی خودکار واریزی شما استفاده می‌شود.\n"
+            f"اگر مبلغ اشتباه واریز شود، سیستم نمی‌تواند پرداخت شما را تشخیص دهد و موجودی شما شارژ نخواهد شد.\n\n"
+            f"✅ به محض ثبت تراکنش در بانک، ظرف چند ثانیه به‌صورت خودکار تأیید و موجودی شما شارژ می‌شود.\n"
+            f"⏰ این مبلغ فقط تا {AUTO_PAYMENT_EXPIRY_MINUTES} دقیقه معتبر است.",
+            parse_mode="Markdown",
+            reply_markup=auto_payment_copy_inline(pay_amount_rial, card),
+        )
+        # کیبورد پایینی (انصراف) روی پیام بالا قابل تنظیم نیست چون خودش کیبورد
+        # شیشه‌ای (inline) دارد؛ برای همین در یک پیام کوتاه جدا نشان داده می‌شود.
+        await answer("برای انصراف از این پرداخت:", reply_markup=cancel_kb())
+    else:
+        payment_id = await db.create_payment(
+            user_id, base_amount, "card", product_id=product_id, renew_sub_id=renew_sub_id,
+            reseller_plan_id=reseller_plan_id,
+        )
+        await answer(
+            t("deposit_card_info", amount=base_amount, card=card, holder=holder),
+            parse_mode="Markdown",
+        )
+        await answer(
+            "📸 لطفاً تصویر رسید پرداخت را ارسال کنید. به محض تأیید ادمین، موجودی شما شارژ "
+            "می‌شود و می‌توانید همان خرید را تکمیل کنید.",
+            reply_markup=cancel_kb(),
+        )
+    return payment_id
 
 
 def _build_product_preview(product: dict, coupon_code: str | None = None, discount_amount: int = 0):
@@ -107,6 +194,7 @@ async def cmd_start(
     # main-menu button taps) and misinterpret it as that flow's input
     # (e.g. "❌ مبلغ نامعتبر است" when tapping "📖 آموزش").
     await state.clear()
+    await _cancel_dangling_payment(db_user)
 
     # Deep link from the Mini App's "خرید از ربات" button:
     # https://t.me/<bot>?start=buy_<product_id>
@@ -142,15 +230,33 @@ async def cmd_start(
     await message.answer(welcome, reply_markup=main_menu(is_admin))
 
 
+async def _cancel_dangling_payment(db_user: dict):
+    """If the user picked card-to-card (for a top-up, a purchase, or a
+    renewal) and then backed out — via /start, "🔙 بازگشت", or "❌ انصراف"
+    — before ever sending a receipt photo, the payment record created for
+    that attempt was previously left sitting in the DB as 'pending'
+    forever: still showing up in the admin's pending-payments list with
+    working ✅/❌ buttons, even though the user explicitly cancelled and
+    nothing was actually paid. This finds that exact dangling payment (if
+    any — most of the time there isn't one) and marks it cancelled so it
+    stops showing up for admin review."""
+    db = get_db()
+    payment = await db.get_latest_unreceipted_pending_payment(db_user["id"])
+    if payment:
+        await db.cancel_payment_if_unreceipted(payment["id"])
+
+
 @router.message(F.text == t("back"))
-async def cmd_back(message: Message, is_admin: bool, state: FSMContext):
+async def cmd_back(message: Message, is_admin: bool, state: FSMContext, db_user: dict):
     await state.clear()
+    await _cancel_dangling_payment(db_user)
     await message.answer(t("main_menu"), reply_markup=main_menu(is_admin))
 
 
 @router.message(F.text == t("cancel"))
-async def cmd_cancel(message: Message, is_admin: bool, state: FSMContext):
+async def cmd_cancel(message: Message, is_admin: bool, state: FSMContext, db_user: dict):
     await state.clear()
+    await _cancel_dangling_payment(db_user)
     await message.answer(t("operation_cancelled"), reply_markup=main_menu(is_admin))
 
 
@@ -465,30 +571,19 @@ async def card_topup_start(callback: CallbackQuery, db_user: dict, state: FSMCon
 
     settings = get_settings()
     card = settings.card_number or await db.get_setting("card_number", "")
-    holder = settings.card_holder or await db.get_setting("card_holder", "")
     if not card:
         await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
         return
 
-    payment_id = await db.create_payment(
-        db_user["id"], deficit, "card", product_id=product_id,
+    payment_id = await _send_card_payment_instructions(
+        callback.message.answer, db, db_user["id"], deficit, product_id=product_id,
     )
-    # ذخیره اطلاعات کوپن روی پرداخت
     if coupon_code and discount_amount:
         await db._execute(
             "UPDATE payments SET coupon_code = ?, discount_amount = ? WHERE id = ?",
             (coupon_code, discount_amount, payment_id),
         )
 
-    await callback.message.answer(
-        t("deposit_card_info", amount=deficit, card=card, holder=holder),
-        parse_mode="Markdown",
-    )
-    await callback.message.answer(
-        "📸 لطفاً تصویر رسید پرداخت را ارسال کنید. به محض تأیید ادمین، موجودی شما شارژ "
-        "می‌شود و می‌توانید همان خرید را تکمیل کنید.",
-        reply_markup=cancel_kb(),
-    )
     await callback.answer()
 
 
@@ -804,20 +899,12 @@ async def card_topup_renew_start(callback: CallbackQuery, db_user: dict):
 
     settings = get_settings()
     card = settings.card_number or await db.get_setting("card_number", "")
-    holder = settings.card_holder or await db.get_setting("card_holder", "")
     if not card:
         await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
         return
 
-    await db.create_payment(db_user["id"], deficit, "card", renew_sub_id=sub_id)
-    await callback.message.answer(
-        t("deposit_card_info", amount=deficit, card=card, holder=holder),
-        parse_mode="Markdown",
-    )
-    await callback.message.answer(
-        "📸 لطفاً تصویر رسید پرداخت را ارسال کنید. به محض تأیید ادمین، موجودی شما شارژ "
-        "می‌شود و می‌توانید همان تمدید را تکمیل کنید.",
-        reply_markup=cancel_kb(),
+    await _send_card_payment_instructions(
+        callback.message.answer, db, db_user["id"], deficit, renew_sub_id=sub_id,
     )
     await callback.answer()
 
@@ -886,23 +973,13 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
 
     settings = get_settings()
     card = settings.card_number or await db.get_setting("card_number", "")
-    holder = settings.card_holder or await db.get_setting("card_holder", "")
     if not card:
         await message.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.")
         await state.clear()
         return
 
-    await db.create_payment(db_user["id"], amount, "card")
     await state.clear()
-    await message.answer(
-        t("deposit_card_info", amount=amount, card=card, holder=holder),
-        parse_mode="Markdown",
-        reply_markup=main_menu(),
-    )
-    await message.answer(
-        "📸 لطفاً تصویر رسید پرداخت را ارسال کنید.",
-        reply_markup=cancel_kb(),
-    )
+    await _send_card_payment_instructions(message.answer, db, db_user["id"], amount)
 
 
 @router.message(F.photo)
@@ -937,6 +1014,10 @@ async def deposit_receipt(message: Message, db_user: dict):
         )
     if payment.get("renew_sub_id"):
         caption += f"\n🔁 برای تکمیل تمدید سرویس: #{payment['renew_sub_id']}"
+    elif payment.get("reseller_plan_id"):
+        plan = await db.get_reseller_plan(payment["reseller_plan_id"])
+        if plan:
+            caption += f"\n🤝 برای تکمیل خرید/تمدید نمایندگی: {plan['name']}"
     elif payment.get("product_id"):
         product = await db.get_product(payment["product_id"])
         if product:
@@ -959,6 +1040,208 @@ async def deposit_receipt(message: Message, db_user: dict):
         await db.set_payment_notif_chats(payment["id"], sent_refs)
 
     await message.answer(t("deposit_pending"), reply_markup=main_menu())
+
+
+def _format_reseller_expiry(ts: int) -> str:
+    if not ts:
+        return "نامحدود"
+    if ts < int(time.time()):
+        return "منقضی شده"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _reseller_panel_url() -> str:
+    panel_url = (get_settings().panel_url or "").strip()
+    if not panel_url.startswith("https://"):
+        return ""
+    return panel_url.rstrip("/") + "/reseller/"
+
+
+async def _send_reseller_plans(answer):
+    db = get_db()
+    plans = await db.get_reseller_plans(active_only=True)
+    if not plans:
+        await answer("❌ در حال حاضر پلن نمایندگی‌ای تعریف نشده است.")
+        return
+    await answer(
+        "🤝 پلن‌های نمایندگی موجود:\nیک پلن را انتخاب کنید:",
+        reply_markup=reseller_plans_inline(plans),
+    )
+
+
+@router.message(F.text == t("reseller_panel"))
+async def reseller_panel_entry(message: Message, db_user: dict):
+    db = get_db()
+    reseller = await db.get_reseller_by_user(db_user["id"])
+    if not reseller:
+        await message.answer(
+            "🤝 پنل نمایندگی\n\n"
+            "با خرید یکی از پلن‌های نمایندگی، حجم و زمان مشخصی در اختیار شما قرار می‌گیرد. "
+            "می‌توانید از طریق پنل تحت وب (Mini App) در همان سقف حجم/زمان، به دلخواه خودتان "
+            "کانفیگ بسازید، آن‌ها را مدیریت (تمدید، تغییر حجم، غیرفعال‌سازی موقت یا حذف) کنید."
+        )
+        await _send_reseller_plans(message.answer)
+        return
+
+    now = int(time.time())
+    expired = bool(reseller["expires_at"]) and reseller["expires_at"] < now
+    disabled = reseller["status"] != "active"
+    used = await db.get_reseller_used_gb(reseller["id"])
+    remaining = max(0.0, reseller["quota_gb"] - used)
+
+    status_text = (
+        f"🤝 پنل نمایندگی شما\n\n"
+        f"📦 پلن: {reseller.get('plan_name') or '—'}\n"
+        f"📊 حجم کل: {reseller['quota_gb']} GB\n"
+        f"📈 حجم تخصیص‌یافته به کانفیگ‌ها: {used:.2f} GB\n"
+        f"📉 حجم باقیمانده: {remaining:.2f} GB\n"
+        f"⏱ انقضا: {_format_reseller_expiry(reseller['expires_at'])}\n"
+        f"وضعیت: "
+    )
+    if disabled:
+        status_text += "🚫 غیرفعال‌شده توسط ادمین\n\n⚠️ برای اطلاعات بیشتر با پشتیبانی تماس بگیرید."
+    elif expired:
+        status_text += "⛔️ منقضی شده\n\n⚠️ مهلت پلن نمایندگی شما تمام شده و پنل تحت وب قفل شده. برای ادامه، پلن را تمدید کنید."
+    else:
+        status_text += "✅ فعال"
+
+    await message.answer(
+        status_text,
+        reply_markup=reseller_status_inline(_reseller_panel_url(), expired or disabled),
+    )
+
+
+@router.callback_query(F.data == "res_renew_start")
+async def reseller_renew_start(callback: CallbackQuery):
+    await _send_reseller_plans(callback.message.answer)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "res_back_plans")
+async def reseller_back_to_plans(callback: CallbackQuery):
+    db = get_db()
+    plans = await db.get_reseller_plans(active_only=True)
+    if not plans:
+        await callback.answer("❌ پلنی وجود ندارد", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🤝 پلن‌های نمایندگی موجود:\nیک پلن را انتخاب کنید:",
+        reply_markup=reseller_plans_inline(plans),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("res_plan:"))
+async def reseller_plan_preview(callback: CallbackQuery, db_user: dict):
+    plan_id = int(callback.data.split(":")[1])
+    db = get_db()
+    plan = await db.get_reseller_plan(plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+
+    reseller = await db.get_reseller_by_user(db_user["id"])
+    renew = bool(reseller)
+
+    text = (
+        f"🤝 {plan['name']}\n"
+        f"📊 حجم: {plan['volume_gb']} GB\n"
+        f"⏱ مدت: {plan['duration_days']} روز\n"
+        f"💰 قیمت: {plan['price']:,} تومان\n"
+        f"📡 پنل: {plan['panel_name']}\n"
+    )
+    if plan.get("description"):
+        text += f"\n📝 {plan['description']}"
+    if renew:
+        text += (
+            "\n\n⚠️ توجه: با تأیید این پلن، حجم و زمان پنل نمایندگی فعلی شما با این پلن "
+            "جایگزین می‌شود (جمع نمی‌شود)."
+        )
+    await callback.message.edit_text(text, reply_markup=reseller_confirm_inline(plan_id, renew=renew))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("res_confirm:"))
+async def reseller_confirm(callback: CallbackQuery, db_user: dict):
+    plan_id = int(callback.data.split(":")[1])
+    db = get_db()
+    plan = await db.get_reseller_plan(plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+
+    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
+    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+
+    existing_reseller = await db.get_reseller_by_user(db_user["id"])
+    if existing_reseller and existing_reseller["panel_id"] != plan["panel_id"]:
+        configs_count = await db.get_reseller_configs_count(existing_reseller["id"])
+        if configs_count > 0:
+            await callback.answer(
+                "❌ این پلن روی پنل دیگری است. ابتدا کانفیگ‌های فعلی خود را حذف کنید یا "
+                "پلنی از همان پنل قبلی انتخاب کنید.",
+                show_alert=True,
+            )
+            return
+
+    if balance < plan["price"]:
+        deficit = plan["price"] - balance
+        await callback.message.edit_text(
+            f"❌ موجودی کیف پول کافی نیست.\nموجودی شما: {balance:,} تومان\n"
+            f"مبلغ مورد نیاز: {plan['price']:,} تومان\nمبلغ کسری: {deficit:,} تومان",
+            reply_markup=reseller_insufficient_balance_inline(plan_id),
+        )
+        await callback.answer()
+        return
+
+    now = int(time.time())
+    expires_at = now + plan["duration_days"] * 86400
+    await db.update_user_balance(db_user["id"], -plan["price"])
+    await db.create_or_renew_reseller(
+        db_user["id"], plan_id, plan["panel_id"], plan["volume_gb"], expires_at,
+    )
+    await db.create_order(
+        db_user["id"], None, plan["price"], "balance",
+        f"خرید/تمدید نمایندگی: {plan['name']}",
+    )
+
+    text = (
+        f"✅ پلن نمایندگی «{plan['name']}» با موفقیت فعال شد!\n\n"
+        f"📊 حجم: {plan['volume_gb']} GB\n"
+        f"⏱ مدت: {plan['duration_days']} روز\n"
+        f"⏰ انقضا: {_format_reseller_expiry(expires_at)}\n\n"
+        f"از دکمه زیر برای باز کردن پنل نمایندگی خود استفاده کنید 👇"
+    )
+    await callback.message.edit_text(text, reply_markup=reseller_status_inline(_reseller_panel_url(), False))
+    await callback.answer("✅ فعال شد.")
+
+
+@router.callback_query(F.data.startswith("res_topup:"))
+async def reseller_card_topup_start(callback: CallbackQuery, db_user: dict):
+    plan_id = int(callback.data.split(":")[1])
+    db = get_db()
+    plan = await db.get_reseller_plan(plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+
+    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
+    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    deficit = plan["price"] - balance
+    if deficit <= 0:
+        await callback.answer("موجودی شما کافی است، دوباره روی تأیید بزنید.", show_alert=True)
+        return
+
+    settings = get_settings()
+    card = settings.card_number or await db.get_setting("card_number", "")
+    if not card:
+        await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
+        return
+
+    await _send_card_payment_instructions(
+        callback.message.answer, db, db_user["id"], deficit, reseller_plan_id=plan_id,
+    )
+    await callback.answer()
 
 
 @router.message(F.text == t("support"))

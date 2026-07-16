@@ -329,16 +329,120 @@ class Database:
         )
 
     # --- Payments ---
+    async def get_latest_unreceipted_pending_payment(self, user_id: int) -> dict | None:
+        """The user's most recent pending payment with no receipt uploaded
+        yet — i.e. they picked card-to-card (for a deposit, a purchase, or
+        a renewal) and haven't sent a photo of the receipt. Used to find
+        what to cancel if they back out instead of paying."""
+        return await self._fetchone(
+            "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' "
+            "AND receipt_file_id IS NULL ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+
+    async def cancel_payment_if_unreceipted(self, payment_id: int) -> bool:
+        """Cancels a payment, but ONLY if it's still pending and has no
+        receipt attached — never touches one a receipt has already been
+        sent for (that must go through normal admin approve/reject)."""
+        conn = await self.connect()
+        try:
+            cursor = await conn.execute(
+                "UPDATE payments SET status = 'cancelled' WHERE id = ? "
+                "AND status = 'pending' AND receipt_file_id IS NULL",
+                (payment_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
     async def create_payment(
         self, user_id: int, amount: int, payment_method: str = "card",
         order_id: int | None = None, receipt_file_id: str | None = None,
         product_id: int | None = None, renew_sub_id: int | None = None,
+        expected_amount: int | None = None, expires_at: str | None = None,
+        reseller_plan_id: int | None = None,
     ) -> int:
         return await self._execute(
-            "INSERT INTO payments (user_id, order_id, product_id, renew_sub_id, amount, payment_method, receipt_file_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, order_id, product_id, renew_sub_id, amount, payment_method, receipt_file_id),
+            "INSERT INTO payments (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, "
+            "amount, payment_method, receipt_file_id, expected_amount, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, amount, payment_method,
+             receipt_file_id, expected_amount, expires_at),
         )
+
+    async def expected_amount_taken(self, expected_amount: int) -> bool:
+        """Used while generating the random 3-digit verification code, to
+        avoid handing two different users the same exact amount to pay at
+        the same time (which would make the SMS webhook unable to tell
+        who paid)."""
+        row = await self._fetchone(
+            "SELECT 1 FROM payments WHERE expected_amount = ? AND status = 'pending'",
+            (expected_amount,),
+        )
+        return row is not None
+
+    async def get_payment_by_expected_amount(self, expected_amount: int) -> dict | None:
+        """Finds the (single) pending, not-yet-expired auto-payment whose
+        verification amount matches what showed up in a bank SMS."""
+        return await self._fetchone(
+            "SELECT * FROM payments WHERE expected_amount = ? AND status = 'pending' "
+            "AND (expires_at IS NULL OR expires_at > datetime('now')) "
+            "ORDER BY id DESC LIMIT 1",
+            (expected_amount,),
+        )
+
+    async def expire_stale_payments(self) -> list[dict]:
+        """Marks pending auto-payments whose 20-minute window has passed as
+        'expired', and returns the rows that were just expired so the
+        caller can notify each user. Payments without an expiry (manual
+        receipt-based ones) are never touched."""
+        conn = await self.connect()
+        try:
+            cursor = await conn.execute(
+                "SELECT * FROM payments WHERE status = 'pending' "
+                "AND expires_at IS NOT NULL AND expires_at <= datetime('now')"
+            )
+            rows = await cursor.fetchall()
+            expired = [dict(r) for r in rows]
+            if expired:
+                await conn.execute(
+                    "UPDATE payments SET status = 'expired' WHERE status = 'pending' "
+                    "AND expires_at IS NOT NULL AND expires_at <= datetime('now')"
+                )
+                await conn.commit()
+            return expired
+        finally:
+            await conn.close()
+
+    async def approve_payment_auto(self, payment_id: int) -> dict | None:
+        """Atomically approve a payment matched by the SMS webhook and
+        credit the user's balance — mirrors what admin approval does, but
+        only acts if the payment is still pending (safe against a human
+        admin approving/rejecting it at the same moment). Returns the
+        updated payment row on success, or None if it was no longer
+        pending by the time this ran."""
+        conn = await self.connect()
+        try:
+            cursor = await conn.execute(
+                "UPDATE payments SET status = 'approved', admin_note = 'تایید خودکار (پیامک بانکی)' "
+                "WHERE id = ? AND status = 'pending'",
+                (payment_id,),
+            )
+            if cursor.rowcount == 0:
+                await conn.commit()
+                return None
+            fetch_cursor = await conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))
+            payment_row = await fetch_cursor.fetchone()
+            payment = dict(payment_row)
+            await conn.execute(
+                "UPDATE users SET balance = balance + ? WHERE id = ?",
+                (payment["amount"], payment["user_id"]),
+            )
+            await conn.commit()
+            return payment
+        finally:
+            await conn.close()
 
     async def get_payment(self, payment_id: int) -> dict | None:
         return await self._fetchone("SELECT * FROM payments WHERE id = ?", (payment_id,))
@@ -512,6 +616,183 @@ class Database:
         else:
             discount = coupon["discount_value"]
         return min(discount, price)
+
+
+    # --- Reseller plans (defined by main admins) ---
+    async def get_reseller_plans(self, active_only: bool = True) -> list[dict]:
+        query = (
+            "SELECT rp.*, pn.name as panel_name FROM reseller_plans rp "
+            "JOIN panels pn ON rp.panel_id = pn.id"
+        )
+        if active_only:
+            query += " WHERE rp.is_active = 1"
+        query += " ORDER BY rp.price"
+        return await self._fetchall(query)
+
+    async def get_reseller_plan(self, plan_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT rp.*, pn.name as panel_name, pn.url as panel_url, "
+            "pn.api_token, pn.inbound_ids, pn.on_hold "
+            "FROM reseller_plans rp JOIN panels pn ON rp.panel_id = pn.id "
+            "WHERE rp.id = ?",
+            (plan_id,),
+        )
+
+    async def add_reseller_plan(
+        self, name: str, panel_id: int, volume_gb: float,
+        duration_days: int, price: int, description: str = "",
+    ) -> int:
+        return await self._execute(
+            "INSERT INTO reseller_plans (name, panel_id, volume_gb, duration_days, price, description) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, panel_id, volume_gb, duration_days, price, description),
+        )
+
+    async def update_reseller_plan(self, plan_id: int, **fields):
+        allowed = {
+            "name", "panel_id", "volume_gb", "duration_days",
+            "price", "is_active", "description",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        await self._execute(
+            f"UPDATE reseller_plans SET {cols} WHERE id = ?",
+            (*updates.values(), plan_id),
+        )
+
+    async def delete_reseller_plan(self, plan_id: int):
+        await self._execute("DELETE FROM reseller_plans WHERE id = ?", (plan_id,))
+
+    # --- Resellers ---
+    async def get_reseller_by_user(self, user_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT r.*, pn.name as panel_name, pn.url as panel_url, pn.api_token, "
+            "pn.inbound_ids, pn.on_hold, pn.sub_link_template, rp.name as plan_name "
+            "FROM resellers r JOIN panels pn ON r.panel_id = pn.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "WHERE r.user_id = ?",
+            (user_id,),
+        )
+
+    async def get_reseller(self, reseller_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT r.*, pn.name as panel_name, pn.url as panel_url, pn.api_token, "
+            "pn.inbound_ids, pn.on_hold, pn.sub_link_template, rp.name as plan_name, "
+            "u.telegram_id, u.username, u.full_name "
+            "FROM resellers r JOIN panels pn ON r.panel_id = pn.id "
+            "JOIN users u ON r.user_id = u.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "WHERE r.id = ?",
+            (reseller_id,),
+        )
+
+    async def get_all_resellers(self) -> list[dict]:
+        return await self._fetchall(
+            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name "
+            "FROM resellers r JOIN users u ON r.user_id = u.id "
+            "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
+            "ORDER BY r.id DESC"
+        )
+
+    async def create_or_renew_reseller(
+        self, user_id: int, plan_id: int, panel_id: int,
+        quota_gb: float, expires_at: int,
+    ) -> int:
+        """درخواست خرید/تمدید پنل نمایندگی: اگه نماینده از قبل وجود داشته
+        باشه، حجم/زمان/پنل/وضعیتش ریست میشه (مثل تمدید سرویس عادی)، وگرنه
+        یک رکورد جدید ساخته میشه."""
+        existing = await self._fetchone(
+            "SELECT id FROM resellers WHERE user_id = ?", (user_id,)
+        )
+        if existing:
+            await self._execute(
+                "UPDATE resellers SET plan_id = ?, panel_id = ?, quota_gb = ?, "
+                "expires_at = ?, status = 'active' WHERE id = ?",
+                (plan_id, panel_id, quota_gb, expires_at, existing["id"]),
+            )
+            return existing["id"]
+        return await self._execute(
+            "INSERT INTO resellers (user_id, plan_id, panel_id, quota_gb, expires_at, status) "
+            "VALUES (?, ?, ?, ?, ?, 'active')",
+            (user_id, plan_id, panel_id, quota_gb, expires_at),
+        )
+
+    async def set_reseller_status(self, reseller_id: int, status: str):
+        await self._execute(
+            "UPDATE resellers SET status = ? WHERE id = ?", (status, reseller_id)
+        )
+
+    async def get_reseller_used_gb(self, reseller_id: int) -> float:
+        row = await self._fetchone(
+            "SELECT COALESCE(SUM("
+            "  CASE WHEN status = 'deleted' THEN consumed_gb ELSE volume_gb + consumed_gb END"
+            "), 0) as used "
+            "FROM reseller_configs WHERE reseller_id = ?",
+            (reseller_id,),
+        )
+        return row["used"] if row else 0.0
+
+    async def get_reseller_configs(self, reseller_id: int, include_deleted: bool = False) -> list[dict]:
+        query = "SELECT * FROM reseller_configs WHERE reseller_id = ?"
+        if not include_deleted:
+            query += " AND status != 'deleted'"
+        query += " ORDER BY id DESC"
+        return await self._fetchall(query, (reseller_id,))
+
+    async def get_reseller_configs_count(self, reseller_id: int) -> int:
+        row = await self._fetchone(
+            "SELECT COUNT(*) as c FROM reseller_configs WHERE reseller_id = ? AND status != 'deleted'",
+            (reseller_id,),
+        )
+        return row["c"] if row else 0
+
+    async def get_reseller_config(self, config_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT rc.*, r.user_id, r.panel_id, r.quota_gb, r.expires_at as reseller_expires_at, "
+            "r.status as reseller_status, pn.url as panel_url, pn.api_token, pn.inbound_ids, "
+            "pn.sub_link_template, pn.on_hold "
+            "FROM reseller_configs rc "
+            "JOIN resellers r ON rc.reseller_id = r.id "
+            "JOIN panels pn ON r.panel_id = pn.id "
+            "WHERE rc.id = ?",
+            (config_id,),
+        )
+
+    async def add_reseller_config(self, **data) -> int:
+        return await self._execute(
+            "INSERT INTO reseller_configs "
+            "(reseller_id, label, email, sub_id, volume_gb, expiry_time, "
+            "config_link, config_links, sub_link, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data["reseller_id"],
+                data.get("label", ""),
+                data["email"],
+                data.get("sub_id", ""),
+                data["volume_gb"],
+                data.get("expiry_time", 0),
+                data.get("config_link", ""),
+                data.get("config_links", "[]"),
+                data.get("sub_link", ""),
+                data.get("status", "active"),
+            ),
+        )
+
+    async def update_reseller_config(self, config_id: int, **fields):
+        allowed = {
+            "label", "volume_gb", "expiry_time", "config_link",
+            "config_links", "sub_link", "status", "sub_id", "consumed_gb",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        await self._execute(
+            f"UPDATE reseller_configs SET {cols} WHERE id = ?",
+            (*updates.values(), config_id),
+        )
 
 
 _db: Database | None = None

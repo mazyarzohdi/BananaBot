@@ -1,0 +1,39 @@
+{% extends "shared/base.html" %}
+{% block title %}نمایندگان{% endblock %}
+{% block page_title %}نمایندگان{% endblock %}
+{% block nav_admin_resellers %}active{% endblock %}
+{% block content %}
+
+<div class="card">
+  {% if resellers %}
+  <table class="table">
+    <thead>
+      <tr><th>کاربر</th><th>پلن</th><th>حجم کل</th><th>مصرف‌شده</th><th>باقیمانده</th><th>انقضا</th><th>وضعیت</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in resellers %}
+      <tr>
+        <td>{{ r.full_name|default:r.username }}<div class="meta">{{ r.telegram_id }}</div></td>
+        <td>{{ r.plan_name|default:"—" }}</td>
+        <td>{{ r.quota_gb }} GB</td>
+        <td>{{ r.used_gb|floatformat:2 }} GB</td>
+        <td>{{ r.remaining_gb|floatformat:2 }} GB</td>
+        <td>{{ r.expires_at_text }}</td>
+        <td>
+          {% if r.status != "active" %}<span class="badge-red">غیرفعال</span>
+          {% elif r.expired %}<span class="badge-orange">منقضی</span>
+          {% else %}<span class="badge-green">فعال</span>{% endif %}
+        </td>
+        <td><a href="{% url 'panel:admin_reseller_detail' r.id %}" class="btn btn-sm btn-ghost">جزئیات</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-card">
+    <i class="fa fa-user-tie fa-3x"></i>
+    <p>هنوز نماینده‌ای وجود ندارد.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

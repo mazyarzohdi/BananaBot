@@ -9,12 +9,21 @@
     <h2 class="card-title">اطلاعات پرداخت #{{ payment.id }}</h2>
     <div class="detail-row"><span>کاربر:</span><strong>{{ payment.full_name|default:payment.telegram_id }}</strong></div>
     <div class="detail-row"><span>مبلغ:</span><strong class="text-green">{{ payment.amount|floatformat:0 }} تومان</strong></div>
+    {% if payment.expected_amount %}
+    <div class="detail-row"><span>مبلغ درخواستی از کاربر (با شناسه):</span><strong>{{ payment.expected_amount|floatformat:0 }} ریال</strong></div>
+    {% endif %}
     <div class="detail-row"><span>روش پرداخت:</span>{{ payment.payment_method }}</div>
     <div class="detail-row"><span>وضعیت:</span>
       {% if payment.status == 'pending' %}<span class="badge-orange">در انتظار</span>
       {% elif payment.status == 'approved' %}<span class="badge-green">تأیید شده</span>
-      {% else %}<span class="badge-red">رد شده</span>{% endif %}
+      {% elif payment.status == 'rejected' %}<span class="badge-red">رد شده</span>
+      {% elif payment.status == 'cancelled' %}<span class="badge-red">لغوشده توسط کاربر</span>
+      {% elif payment.status == 'expired' %}<span class="badge-red">منقضی‌شده (بدون پرداخت)</span>
+      {% else %}<span class="badge-red">{{ payment.status }}</span>{% endif %}
     </div>
+    {% if payment.expires_at and payment.status == 'pending' %}
+    <div class="detail-row"><span>مهلت پرداخت خودکار تا:</span><small>{{ payment.expires_at }}</small></div>
+    {% endif %}
     {% if payment.admin_note %}
     <div class="detail-row"><span>یادداشت ادمین:</span>{{ payment.admin_note }}</div>
     {% endif %}

@@ -1,0 +1,46 @@
+{% extends "shared/base.html" %}
+{% block title %}پلن‌های نمایندگی{% endblock %}
+{% block page_title %}پلن‌های نمایندگی{% endblock %}
+{% block nav_reseller_plans %}active{% endblock %}
+{% block content %}
+
+<div class="card-toolbar">
+  <a href="{% url 'panel:admin_reseller_plan_add' %}" class="btn btn-primary"><i class="fa fa-plus"></i> افزودن پلن نمایندگی</a>
+</div>
+
+<div class="card mt-3">
+  {% if plans %}
+  <table class="table">
+    <thead>
+      <tr><th>نام</th><th>پنل</th><th>حجم</th><th>مدت</th><th>قیمت</th><th>وضعیت</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for p in plans %}
+      <tr>
+        <td>{{ p.name }}</td>
+        <td>{{ p.panel_name }}</td>
+        <td>{{ p.volume_gb }} GB</td>
+        <td>{{ p.duration_days }} روز</td>
+        <td>{{ p.price|floatformat:0 }} تومان</td>
+        <td>{% if p.is_active %}<span class="badge-green">فعال</span>{% else %}<span class="badge-gray">غیرفعال</span>{% endif %}</td>
+        <td>
+          <div class="btn-group">
+            <a href="{% url 'panel:admin_reseller_plan_edit' p.id %}" class="btn btn-sm btn-ghost"><i class="fa fa-pen"></i></a>
+            <form method="post" action="{% url 'panel:admin_reseller_plan_delete' p.id %}" onsubmit="return confirm('حذف کامل این پلن؟')">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-danger"><i class="fa fa-trash"></i></button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-card">
+    <i class="fa fa-people-arrows fa-3x"></i>
+    <p>هنوز پلن نمایندگی‌ای ثبت نشده.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

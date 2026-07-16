@@ -53,6 +53,8 @@ TEXTS = {
     "admin_tutorials": "📖 مدیریت آموزش‌ها",
     "admin_coupons": "🎟 مدیریت کوپن‌ها",
     "admin_broadcast": "📢 ارسال همگانی",
+    "reseller_panel": "🤝 پنل نمایندگی",
+    "admin_reseller": "🤝 مدیریت نمایندگی",
     "not_admin": "❌ دسترسی ادمین ندارید.",
     "operation_cancelled": "❌ عملیات لغو شد.",
     "invalid_amount": "❌ مبلغ نامعتبر است.",
