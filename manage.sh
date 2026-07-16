@@ -442,7 +442,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable "$WEBHOOK_SERVICE" >> "$LOG_FILE" 2>&1
+        systemctl enable "$WEBHOOK_SERVICE"
         systemctl start "$WEBHOOK_SERVICE"
         success "Auto-payment webhook service created (see menu option 21 for status, and AUTO_PAYMENT_SETUP.md to configure)."
     fi
