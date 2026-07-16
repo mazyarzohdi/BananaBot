@@ -28,6 +28,14 @@ ENV_FILE="$INSTALL_DIR/.env"
 WEBAPP_ENV="$WEBAPP_DIR/.env"
 DB_PATH="$INSTALL_DIR/data/bot.db"
 BACKUP_DIR="$INSTALL_DIR/data/backups"
+# lib/webapp_lib.sh (sourced below via load_webapp_lib) requires these two
+# to already be set by its caller. install.sh always set them, but manage.sh
+# never did — any function here that sources the lib (webapp_deploy,
+# webapp_sync_after_code_update, webapp_sync_db_schema, ...) would abort
+# immediately with "unbound variable" under `set -u`, since neither name was
+# defined anywhere in this file.
+WEBAPP_VENV="$WEBAPP_DIR/.venv"
+LOG_FILE="/var/log/bananabot-manage.log"
 
 # ------------------------------------------------------------
 RED='\033[0;31m'
@@ -418,6 +426,24 @@ action_update() {
     log "Checking/repairing database schema..."
     "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
 
+    # A code update can bring new webapp dependencies, new Django-level
+    # schema (auth/session tables db_schema.py doesn't own), or new static
+    # assets. Skipped entirely if the web panel was never set up.
+    if [[ -f "$WEBAPP_ENV" ]]; then
+        load_webapp_lib
+        webapp_sync_after_code_update
+        if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+            log "Restarting web panel so it picks up the update..."
+            systemctl restart "$WEBAPP_SERVICE"
+            sleep 1
+            if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+                success "Web panel restarted."
+            else
+                error "Web panel failed to restart after update. Check: journalctl -u $WEBAPP_SERVICE -n 50"
+            fi
+        fi
+    fi
+
     if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
         log "Setting up the auto-payment webhook service (new since your last install)..."
         cat > "/etc/systemd/system/${WEBHOOK_SERVICE}.service" << EOF
@@ -606,6 +632,17 @@ action_restore_db() {
     log "Checking/repairing database schema against the current code..."
     "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
 
+    # The restored backup may predate the web panel entirely (or predate a
+    # Django app being added), in which case Django's own auth_*/
+    # django_session tables — a completely separate schema that
+    # db_schema.py knows nothing about — would be missing from it. Those
+    # get queried on EVERY web panel request, so without this the panel
+    # would 500 immediately on restart. Run this BEFORE starting it back up.
+    if [[ -f "$WEBAPP_ENV" ]]; then
+        load_webapp_lib
+        webapp_sync_db_schema
+    fi
+
     if [[ "$bot_was_running" -eq 1 ]]; then
         log "Starting bot..."
         systemctl start "$SERVICE_NAME"
@@ -625,6 +662,10 @@ action_check_db_schema() {
     fi
     log "Checking database schema against the current code..."
     "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+    if [[ -f "$WEBAPP_ENV" ]]; then
+        load_webapp_lib
+        webapp_sync_db_schema
+    fi
     success "Done. Safe to run any time — e.g. right after 'Update Bot from GitHub'."
 }
 

@@ -159,6 +159,69 @@ webapp_installed() {
     [[ -f "$WEBAPP_DIR/.env" && -f "/etc/systemd/system/${WEBAPP_SERVICE}.service" ]]
 }
 
+# Re-applies Django's OWN internal tables (auth_*, django_session,
+# django_content_type, django_migrations, ...) against whatever bot.db
+# currently is on disk. These live in the exact same sqlite file as
+# BananaBot's own tables but are a completely separate schema, owned by
+# Django's migration system — db_schema.py's reconcile() only knows about
+# BananaBot's own tables/columns and never touches these.
+#
+# This matters because SessionMiddleware/AuthenticationMiddleware query
+# django_session / auth_* on EVERY request. If bot.db is ever replaced with
+# a backup taken before the web panel existed (or before some Django app
+# was added), those tables are simply missing and every single page load
+# 500s — reconcile() alone cannot fix that, only `manage.py migrate` can.
+#
+# No-op if the web panel was never set up. Safe to call repeatedly.
+webapp_sync_db_schema() {
+    if ! webapp_installed; then
+        return 0
+    fi
+    log "Web panel: syncing Django's own internal tables (auth/sessions)..."
+    if (
+        cd "$WEBAPP_DIR"
+        set -a
+        source "$WEBAPP_DIR/.env"
+        set +a
+        "$WEBAPP_VENV/bin/python" manage.py migrate --run-syncdb >> "$LOG_FILE" 2>&1
+    ); then
+        success "Web panel database schema synced."
+    else
+        warn "Web panel schema sync failed — check $LOG_FILE"
+    fi
+}
+
+# Full refresh to run after the bot's CODE changes (git update): reinstalls
+# webapp Python deps (a new version may need new packages), syncs Django's
+# internal schema (see webapp_sync_db_schema above), and refreshes collected
+# static files. Deliberately does NOT touch .env, SSL, domain/port, or the
+# systemd unit — use webapp_deploy() instead if those need to change.
+# No-op if the web panel was never set up. Safe to call repeatedly.
+webapp_sync_after_code_update() {
+    if ! webapp_installed; then
+        return 0
+    fi
+    log "Web panel: updating Python dependencies..."
+    if ! "$WEBAPP_VENV/bin/pip" install -r "$WEBAPP_DIR/requirements.txt" --quiet >> "$LOG_FILE" 2>&1; then
+        warn "Web panel dependency update failed — check $LOG_FILE"
+    fi
+
+    webapp_sync_db_schema
+
+    log "Web panel: refreshing collected static files..."
+    if (
+        cd "$WEBAPP_DIR"
+        set -a
+        source "$WEBAPP_DIR/.env"
+        set +a
+        "$WEBAPP_VENV/bin/python" manage.py collectstatic --noinput >> "$LOG_FILE" 2>&1
+    ); then
+        success "Web panel static files refreshed."
+    else
+        warn "Web panel static file refresh failed — check $LOG_FILE"
+    fi
+}
+
 webapp_get_env_value() {
     local key="$1"
     grep -E "^${key}=" "$WEBAPP_DIR/.env" 2>/dev/null | cut -d'=' -f2- || echo ""

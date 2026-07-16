@@ -131,7 +131,7 @@ install_system_deps() {
             done
         fi
         dpkg --configure -a >> "$LOG_FILE" 2>&1 || true
-        apt-get update --allow-releaseinfo-change -qq >> "$LOG_FILE" 2>&1
+        apt-get update -qq >> "$LOG_FILE" 2>&1
         apt-get install -y -qq python3 python3-pip python3-venv git curl unzip >> "$LOG_FILE" 2>&1
     else
         yum install -y python3 python3-pip git curl unzip >> "$LOG_FILE" 2>&1
