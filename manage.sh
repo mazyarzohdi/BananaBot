@@ -623,8 +623,37 @@ action_restore_db() {
     fi
 
     log "Restoring $(basename "$chosen")..."
+    # reconcile() always turns on WAL mode (see db_schema.py), so the live
+    # DB almost always has live.db-wal/-shm sidecar files next to it. If the
+    # bot/webapp were killed (systemctl stop -> SIGTERM) without a chance to
+    # cleanly checkpoint, those sidecars can be left on disk holding frames
+    # that belong to the database we're about to REPLACE. A plain `cp` only
+    # overwrites the main file — the stale -wal/-shm are still sitting there
+    # afterwards, and SQLite will try to replay them onto the new file on
+    # next open. Depending on how the page layouts happen to line up, that
+    # either silently resurrects old (pre-restore) data or corrupts the file
+    # outright ("database disk image is malformed"). Since we've got a
+    # confirmed-good chosen backup file, it's always correct to drop these
+    # before copying it in.
+    rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
     cp "$chosen" "$DB_PATH"
     success "Database file restored."
+
+    log "Verifying restored database integrity..."
+    integrity_result=$("$INSTALL_DIR/.venv/bin/python" -c "
+import sqlite3
+con = sqlite3.connect('$DB_PATH')
+print(con.execute('PRAGMA integrity_check').fetchone()[0])
+" 2>&1) || integrity_result="check failed to run: $integrity_result"
+    if [[ "$integrity_result" == "ok" ]]; then
+        success "Integrity check passed."
+    else
+        error "Integrity check FAILED: $integrity_result"
+        error "The restored file may be corrupt. Your pre-restore database was saved to:"
+        error "  ${safety_dest:-$BACKUP_DIR (see above)}"
+        error "Consider restoring a different backup, or copying that safety file back manually:"
+        error "  cp \"${safety_dest:-<safety file>}\" \"$DB_PATH\""
+    fi
 
     # This is the step that matters most: the backup may be from an older
     # version of the bot, so its schema could be missing tables/columns
