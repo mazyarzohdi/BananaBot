@@ -33,6 +33,7 @@ from bot.keyboards import (
     renew_complete_inline,
     reseller_admin_detail_inline,
     reseller_complete_inline,
+    reseller_delete_confirm_inline,
     reseller_plan_actions_inline,
     reseller_plan_delete_confirm_inline,
     reseller_plan_edit_menu_inline,
@@ -140,6 +141,10 @@ class AdminResellerPlanForm(StatesGroup):
 
 
 class AdminResellerPlanEditForm(StatesGroup):
+    value = State()
+
+
+class AdminResellerEditForm(StatesGroup):
     value = State()
 
 
@@ -2456,6 +2461,7 @@ async def _reseller_detail_text(db, reseller: dict) -> str:
         f"📉 حجم باقیمانده: {max(0, reseller['quota_gb'] - used):.2f} GB\n"
         f"🧾 تعداد کانفیگ‌ها: {configs_count}\n"
         f"⏱ انقضا: {exp_text}\n"
+        f"🗓 تاریخ ثبت: {reseller.get('created_at') or '—'}\n"
         f"وضعیت: {status}"
     )
 
@@ -2510,3 +2516,173 @@ async def reseller_enable(callback: CallbackQuery):
     text = await _reseller_detail_text(db, reseller)
     await callback.message.edit_text(text, reply_markup=reseller_admin_detail_inline(reseller))
     await callback.answer("✅ حساب نماینده فعال شد.")
+
+
+# --- Manual quota/expiry correction (e.g. fixing a mistake at signup) ---
+
+@router.callback_query(F.data.startswith("resv_editq:"))
+async def reseller_edit_quota_start(callback: CallbackQuery, state: FSMContext):
+    reseller_id = int(callback.data.split(":")[1])
+    db = get_db()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    await state.update_data(reseller_id=reseller_id, field="quota_gb")
+    await state.set_state(AdminResellerEditForm.value)
+    await callback.message.answer(
+        f"📊 حجم فعلی: {reseller['quota_gb']} GB\nحجم کل جدید را به GB وارد کنید:",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("resv_edite:"))
+async def reseller_edit_expiry_start(callback: CallbackQuery, state: FSMContext):
+    reseller_id = int(callback.data.split(":")[1])
+    db = get_db()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    await state.update_data(reseller_id=reseller_id, field="expires_at")
+    await state.set_state(AdminResellerEditForm.value)
+    await callback.message.answer(
+        "⏱ تعداد روز باقی‌مانده تا انقضا را از همین الان وارد کنید (0 = نامحدود):",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminResellerEditForm.value)
+async def reseller_edit_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+
+    data = await state.get_data()
+    reseller_id = data["reseller_id"]
+    field = data["field"]
+    raw = (message.text or "").strip()
+
+    if field == "quota_gb":
+        value = parse_positive_float(raw)
+        if value is None:
+            await message.answer("❌ مقدار نامعتبر. یک عدد بزرگ‌تر از صفر برای حجم (GB) وارد کنید:")
+            return
+    else:  # expires_at, entered as "days from now"; 0 = unlimited
+        try:
+            days = int(raw.replace(",", "").replace(" ", ""))
+            if days < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ مقدار نامعتبر. یک عدد صحیح (روز) وارد کنید؛ 0 برای نامحدود:")
+            return
+        value = int(time.time()) + days * 86400 if days > 0 else 0
+
+    db = get_db()
+    await db.update_reseller(reseller_id, **{field: value})
+    await state.clear()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await message.answer("✅ بروزرسانی شد.", reply_markup=admin_menu())
+        return
+    text = await _reseller_detail_text(db, reseller)
+    await message.answer("✅ نماینده بروزرسانی شد.", reply_markup=admin_menu())
+    await message.answer(text, reply_markup=reseller_admin_detail_inline(reseller))
+
+
+# --- Full reseller deletion ---
+
+@router.callback_query(F.data.startswith("resv_del:"))
+async def reseller_delete_ask(callback: CallbackQuery):
+    reseller_id = int(callback.data.split(":")[1])
+    db = get_db()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    uname = f"@{reseller['username']}" if reseller.get("username") else (reseller.get("full_name") or reseller["telegram_id"])
+    configs_count = await db.get_reseller_configs_count(reseller_id)
+    if configs_count:
+        text = (
+            f"⚠️ نماینده «{uname}» دارای {configs_count} کانفیگ فعال است.\n"
+            "با تأیید، همه‌ی این کانفیگ‌ها هم از روی پنل VPN و هم از سیستم ربات حذف می‌شوند "
+            "و مشتریان این نماینده قطع سرویس خواهند شد.\n\n"
+            "⚠️ این عملیات قابل بازگشت نیست. آیا مطمئن هستید؟"
+        )
+    else:
+        text = (
+            f"⚠️ آیا از حذف کامل نماینده «{uname}» مطمئن هستید؟\n"
+            "این نماینده هیچ کانفیگ فعالی ندارد.\n\n"
+            "⚠️ این عملیات قابل بازگشت نیست."
+        )
+    await callback.message.edit_text(text, reply_markup=reseller_delete_confirm_inline(reseller_id))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("resv_del_yes:"))
+async def reseller_delete_confirmed(callback: CallbackQuery):
+    reseller_id = int(callback.data.split(":")[1])
+    db = get_db()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+
+    # Best-effort removal of any live configs from the actual VPN panel
+    # first. We deliberately don't let a panel-side failure block the
+    # bot.db-level deletion (the admin explicitly asked to delete this
+    # reseller), but we DO report which emails couldn't be auto-removed so
+    # nothing is silently orphaned on the panel.
+    configs = await db.get_reseller_configs(reseller_id, include_deleted=False)
+    failed_emails = []
+    if configs:
+        client = XUIClient(reseller["panel_url"], reseller["api_token"])
+        for cfg in configs:
+            try:
+                await client.delete_client(cfg["email"])
+            except Exception:
+                failed_emails.append(cfg["email"])
+
+    await db.delete_reseller(reseller_id)
+
+    if reseller.get("telegram_id"):
+        try:
+            await callback.bot.send_message(
+                reseller["telegram_id"],
+                "🗑 حساب نمایندگی شما توسط ادمین حذف شد. برای اطلاعات بیشتر با پشتیبانی تماس بگیرید.",
+            )
+        except Exception:
+            pass
+
+    if failed_emails:
+        note = (
+            f"✅ نماینده حذف شد، ولی حذف {len(failed_emails)} کانفیگ از روی پنل ناموفق بود "
+            "(ممکن است لازم باشد دستی از پنل پاک شوند):\n" + "\n".join(f"• {e}" for e in failed_emails[:10])
+        )
+    else:
+        note = "✅ نماینده و همه‌ی کانفیگ‌های آن با موفقیت حذف شدند."
+
+    resellers = await db.get_all_resellers()
+    if resellers:
+        await callback.message.edit_text(
+            note + "\n\n📋 لیست نمایندگان:", reply_markup=resellers_admin_inline(resellers),
+        )
+    else:
+        await callback.message.edit_text(note + "\n\n📭 دیگر نماینده‌ای ثبت نشده است.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("resv_del_no:"))
+async def reseller_delete_cancelled(callback: CallbackQuery):
+    reseller_id = int(callback.data.split(":")[1])
+    db = get_db()
+    reseller = await db.get_reseller(reseller_id)
+    if not reseller:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    text = await _reseller_detail_text(db, reseller)
+    await callback.message.edit_text(text, reply_markup=reseller_admin_detail_inline(reseller))
+    await callback.answer()

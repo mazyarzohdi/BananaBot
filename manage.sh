@@ -601,7 +601,7 @@ action_restore_db() {
         return
     fi
 
-    local bot_was_running=0 web_was_running=0
+    local bot_was_running=0 web_was_running=0 webhook_was_running=0
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         bot_was_running=1
         log "Stopping bot..."
@@ -611,6 +611,17 @@ action_restore_db() {
         web_was_running=1
         log "Stopping web panel..."
         systemctl stop "$WEBAPP_SERVICE"
+    fi
+    # payment_webhook_server.py (bananabot-webhook) is a THIRD process that
+    # opens its own connections straight to bot.db (see get_conn() there) —
+    # independent of the bot and web panel. Leaving it running while we
+    # swap the database file out from under it is exactly what causes
+    # "database is locked" moments later, when reconcile()/migrate try to
+    # grab a brief exclusive lock to fix up the schema.
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        webhook_was_running=1
+        log "Stopping auto-payment webhook service..."
+        systemctl stop "$WEBHOOK_SERVICE"
     fi
 
     if [[ -f "$DB_PATH" ]]; then
@@ -643,7 +654,10 @@ action_restore_db() {
     integrity_result=$("$INSTALL_DIR/.venv/bin/python" -c "
 import sqlite3
 con = sqlite3.connect('$DB_PATH')
-print(con.execute('PRAGMA integrity_check').fetchone()[0])
+try:
+    print(con.execute('PRAGMA integrity_check').fetchone()[0])
+finally:
+    con.close()
 " 2>&1) || integrity_result="check failed to run: $integrity_result"
     if [[ "$integrity_result" == "ok" ]]; then
         success "Integrity check passed."
@@ -679,6 +693,10 @@ print(con.execute('PRAGMA integrity_check').fetchone()[0])
     if [[ "$web_was_running" -eq 1 ]]; then
         log "Starting web panel..."
         systemctl start "$WEBAPP_SERVICE"
+    fi
+    if [[ "$webhook_was_running" -eq 1 ]]; then
+        log "Starting auto-payment webhook service..."
+        systemctl start "$WEBHOOK_SERVICE"
     fi
     success "Restore complete."
 }

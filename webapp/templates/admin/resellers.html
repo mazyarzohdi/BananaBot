@@ -8,7 +8,7 @@
   {% if resellers %}
   <table class="table">
     <thead>
-      <tr><th>کاربر</th><th>پلن</th><th>حجم کل</th><th>مصرف‌شده</th><th>باقیمانده</th><th>انقضا</th><th>وضعیت</th><th></th></tr>
+      <tr><th>کاربر</th><th>پلن</th><th>حجم کل</th><th>مصرف‌شده</th><th>باقیمانده</th><th>کانفیگ‌ها</th><th>انقضا</th><th>وضعیت</th><th></th></tr>
     </thead>
     <tbody>
       {% for r in resellers %}
@@ -18,6 +18,7 @@
         <td>{{ r.quota_gb }} GB</td>
         <td>{{ r.used_gb|floatformat:2 }} GB</td>
         <td>{{ r.remaining_gb|floatformat:2 }} GB</td>
+        <td>{% if r.configs_count %}{{ r.configs_count }}{% else %}<span class="meta">بدون کانفیگ</span>{% endif %}</td>
         <td>{{ r.expires_at_text }}</td>
         <td>
           {% if r.status != "active" %}<span class="badge-red">غیرفعال</span>

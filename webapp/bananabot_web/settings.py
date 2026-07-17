@@ -62,6 +62,9 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BOT_DB_PATH,
+        "OPTIONS": {
+            "timeout": 30,
+        },
     }
 }
 

@@ -628,9 +628,11 @@ def resellers_admin_inline(resellers: list[dict]) -> InlineKeyboardMarkup:
     for r in resellers:
         status = "✅" if r.get("status") == "active" else "🚫"
         uname = f"@{r['username']}" if r.get("username") else r.get("full_name") or r["telegram_id"]
+        cfg_count = r.get("configs_count") or 0
+        cfg_badge = f" ({cfg_count} کانفیگ)" if cfg_count else " (بدون کانفیگ)"
         buttons.append([
             InlineKeyboardButton(
-                text=f"{status} {uname} — {r['quota_gb']}GB",
+                text=f"{status} {uname} — {r['quota_gb']}GB{cfg_badge}",
                 callback_data=f"resv:{r['id']}",
             )
         ])
@@ -647,8 +649,24 @@ def reseller_admin_detail_inline(reseller: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [toggle_btn],
+            [
+                InlineKeyboardButton(text="✏️ ویرایش حجم", callback_data=f"resv_editq:{rid}"),
+                InlineKeyboardButton(text="✏️ ویرایش انقضا", callback_data=f"resv_edite:{rid}"),
+            ],
+            [InlineKeyboardButton(text="🗑 حذف کامل نماینده", callback_data=f"resv_del:{rid}")],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"resv:{rid}")],
             [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="resellers_list")],
+        ]
+    )
+
+
+def reseller_delete_confirm_inline(reseller_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ بله، کامل حذف کن", callback_data=f"resv_del_yes:{reseller_id}"),
+                InlineKeyboardButton(text="❌ انصراف", callback_data=f"resv_del_no:{reseller_id}"),
+            ]
         ]
     )
 

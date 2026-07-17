@@ -18,7 +18,7 @@ class Database:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
     async def connect(self) -> aiosqlite.Connection:
-        conn = await aiosqlite.connect(self.path)
+        conn = await aiosqlite.connect(self.path, timeout=30)
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")
         return conn
@@ -690,7 +690,9 @@ class Database:
 
     async def get_all_resellers(self) -> list[dict]:
         return await self._fetchall(
-            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name "
+            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name, "
+            "(SELECT COUNT(*) FROM reseller_configs rc "
+            " WHERE rc.reseller_id = r.id AND rc.status != 'deleted') as configs_count "
             "FROM resellers r JOIN users u ON r.user_id = u.id "
             "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
             "ORDER BY r.id DESC"
@@ -723,6 +725,36 @@ class Database:
         await self._execute(
             "UPDATE resellers SET status = ? WHERE id = ?", (status, reseller_id)
         )
+
+    async def update_reseller(self, reseller_id: int, **fields):
+        """اصلاح دستی حجم/تاریخ‌انقضای یک نماینده توسط ادمین (مثلاً برای
+        رفع اشتباه هنگام ثبت)، بدون نیاز به عبور از فرآیند خرید/تمدید پلن."""
+        allowed = {"quota_gb", "expires_at"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        await self._execute(
+            f"UPDATE resellers SET {cols} WHERE id = ?",
+            (*updates.values(), reseller_id),
+        )
+
+    async def delete_reseller(self, reseller_id: int):
+        """حذف کامل نماینده و همه‌ی رکوردهای کانفیگ ثبت‌شده‌اش در دیتابیس
+        ربات، به‌صورت اتمیک (چون reseller_configs یک FOREIGN KEY به
+        resellers دارد و باید اول حذف شود).
+
+        توجه: این متد کاری با پنل X-UI واقعی ندارد — قبل از صدا زدن این
+        متد، کانفیگ‌های فعال باید جداگانه (با XUIClient.delete_client) از
+        روی پنل حذف شده باشند، وگرنه کلاینت‌ها روی پنل زنده و بدون ردیابی
+        در سیستم باقی می‌مانند."""
+        conn = await self.connect()
+        try:
+            await conn.execute("DELETE FROM reseller_configs WHERE reseller_id = ?", (reseller_id,))
+            await conn.execute("DELETE FROM resellers WHERE id = ?", (reseller_id,))
+            await conn.commit()
+        finally:
+            await conn.close()
 
     async def get_reseller_used_gb(self, reseller_id: int) -> float:
         row = await self._fetchone(

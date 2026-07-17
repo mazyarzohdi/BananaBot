@@ -294,7 +294,7 @@ def reconcile(db_path: str) -> dict:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     report = {"tables_created": [], "columns_added": [], "settings_seeded": []}
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     try:
         # Three separate processes now touch this file concurrently (the
         # bot, the web panel, and the auto-payment webhook server). The

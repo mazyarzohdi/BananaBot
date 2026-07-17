@@ -1104,6 +1104,61 @@ def admin_reseller_detail(request: HttpRequest, reseller_id: int):
                 "✅ حساب نمایندگی شما دوباره فعال شد.",
             )
             messages.success(request, "حساب نماینده فعال شد.")
+        elif action == "edit_quota":
+            try:
+                new_quota = float(request.POST.get("quota_gb", "").strip())
+                if new_quota <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                messages.error(request, "مقدار حجم نامعتبر است.")
+                return redirect("panel:admin_reseller_detail", reseller_id=reseller_id)
+            bot_db.update_reseller(reseller_id, quota_gb=new_quota)
+            messages.success(request, f"حجم نماینده به {new_quota} GB بروزرسانی شد.")
+        elif action == "edit_expiry":
+            try:
+                days = int(request.POST.get("expiry_days", "").strip())
+                if days < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                messages.error(request, "مقدار روز نامعتبر است.")
+                return redirect("panel:admin_reseller_detail", reseller_id=reseller_id)
+            new_expires_at = int(time.time()) + days * 86400 if days > 0 else 0
+            bot_db.update_reseller(reseller_id, expires_at=new_expires_at)
+            messages.success(request, "تاریخ انقضای نماینده بروزرسانی شد.")
+        elif action == "delete":
+            # Best-effort removal from the actual VPN panel first; a
+            # panel-side failure doesn't block deleting the bot.db records
+            # (the admin explicitly confirmed this), but we surface exactly
+            # which configs may need manual cleanup on the panel so nothing
+            # is silently orphaned.
+            configs = bot_db.get_reseller_configs(reseller_id, include_deleted=False)
+            failed_emails = []
+            for cfg in configs:
+                try:
+                    ok = xui_client.delete_client(reseller["panel_url"], reseller["api_token"], cfg["email"])
+                    if not ok:
+                        failed_emails.append(cfg["email"])
+                except Exception:
+                    failed_emails.append(cfg["email"])
+
+            bot_db.delete_reseller(reseller_id)
+            try:
+                telegram_api.send_message(
+                    int(reseller["telegram_id"]),
+                    "🗑 حساب نمایندگی شما توسط ادمین حذف شد. برای اطلاعات بیشتر با پشتیبانی تماس بگیرید.",
+                )
+            except Exception:
+                pass
+
+            if failed_emails:
+                messages.warning(
+                    request,
+                    f"نماینده حذف شد، ولی حذف {len(failed_emails)} کانفیگ از روی پنل ناموفق بود "
+                    "(ممکن است لازم باشد دستی از پنل پاک شوند): " + ", ".join(failed_emails[:10]),
+                )
+            else:
+                messages.success(request, "نماینده و همه‌ی کانفیگ‌های آن با موفقیت حذف شدند.")
+            return redirect("panel:admin_resellers")
         return redirect("panel:admin_reseller_detail", reseller_id=reseller_id)
 
     configs = bot_db.get_reseller_configs(reseller_id)

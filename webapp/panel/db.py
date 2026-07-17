@@ -326,7 +326,9 @@ def get_reseller(reseller_id: int) -> dict | None:
 def get_all_resellers() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name "
+            "SELECT r.*, u.telegram_id, u.username, u.full_name, rp.name as plan_name, "
+            "(SELECT COUNT(*) FROM reseller_configs rc "
+            " WHERE rc.reseller_id = r.id AND rc.status != 'deleted') as configs_count "
             "FROM resellers r JOIN users u ON r.user_id = u.id "
             "LEFT JOIN reseller_plans rp ON r.plan_id = rp.id "
             "ORDER BY r.id DESC"
@@ -337,6 +339,26 @@ def get_all_resellers() -> list[dict]:
 def set_reseller_status(reseller_id: int, status: str):
     with get_conn() as conn:
         conn.execute("UPDATE resellers SET status=? WHERE id=?", (status, reseller_id))
+
+
+def update_reseller(reseller_id: int, **fields):
+    """اصلاح دستی حجم/تاریخ‌انقضای یک نماینده توسط ادمین."""
+    allowed = {"quota_gb", "expires_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    cols = ", ".join(f"{k} = ?" for k in updates)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE resellers SET {cols} WHERE id = ?", (*updates.values(), reseller_id))
+
+
+def delete_reseller(reseller_id: int):
+    """حذف کامل نماینده و رکوردهای کانفیگ آن از دیتابیس (اتمیک، یک
+    اتصال). مثل نسخه‌ی ربات، کاری با پنل X-UI واقعی ندارد — کانفیگ‌های
+    فعال باید قبلش جداگانه از روی پنل حذف شوند."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM reseller_configs WHERE reseller_id = ?", (reseller_id,))
+        conn.execute("DELETE FROM resellers WHERE id = ?", (reseller_id,))
 
 
 def get_reseller_used_gb(reseller_id: int) -> float:
