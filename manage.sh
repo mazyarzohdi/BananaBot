@@ -100,6 +100,16 @@ webapp_status_line() {
     fi
 }
 
+webhook_status_line() {
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        echo -e "  Webhook Status:    ${GREEN}● Running${NC}"
+    elif [[ -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
+        echo -e "  Webhook Status:    ${RED}● Stopped${NC}"
+    else
+        echo -e "  Webhook Status:    ${YELLOW}● Not configured${NC}"
+    fi
+}
+
 print_header() {
     clear
     echo -e "${BOLD}${BLUE}"
@@ -109,6 +119,7 @@ print_header() {
     echo -e "${NC}"
     bot_status
     webapp_status_line
+    webhook_status_line
     echo ""
 }
 
@@ -150,6 +161,8 @@ main_menu() {
     echo "   [21] ℹ️  Webhook Status & Info"
     echo "   [22] ↺  Restart Webhook Service"
     echo "   [24] ■  Stop Webhook Service"
+    echo "   [25] 📜 View Webhook Live Logs"
+    echo "   [26] 📋 View Webhook Last 50 Log Lines"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -424,6 +437,27 @@ action_webhook_stop() {
     else
         error "Webhook service failed to stop. Check: journalctl -u $WEBHOOK_SERVICE -n 30"
     fi
+}
+
+action_webhook_live_log() {
+    if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
+        warn "Webhook service is not set up yet."
+        return
+    fi
+    echo -e "${YELLOW}Press Ctrl+C to exit the logs.${NC}"
+    echo ""
+    journalctl -u "$WEBHOOK_SERVICE" -f --no-pager
+}
+
+action_webhook_last_logs() {
+    echo ""
+    if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
+        warn "Webhook service is not set up yet."
+        return
+    fi
+    journalctl -u "$WEBHOOK_SERVICE" -n 50 --no-pager
+    echo ""
+    read -rp "Press Enter to return..."
 }
 
 # ------------------------------------------------------------
@@ -1052,11 +1086,13 @@ run() {
             21) action_webhook_info ;;
             22) action_webhook_restart ;;
             24) action_webhook_stop ;;
+            25) action_webhook_live_log ;;
+            26) action_webhook_last_logs ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
 
-        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" && "$CHOICE" != "21" ]]; then
+        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" && "$CHOICE" != "21" && "$CHOICE" != "25" && "$CHOICE" != "26" ]]; then
             echo ""
             read -rp "  Press Enter to return to menu..."
         fi

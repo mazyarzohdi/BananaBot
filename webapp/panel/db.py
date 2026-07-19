@@ -446,16 +446,17 @@ def get_pending_payments() -> list[dict]:
 def get_payments_page(page: int, per_page: int = 20, status: str = "") -> tuple[list[dict], int]:
     offset = (page - 1) * per_page
     with get_conn() as conn:
-        base = (
-            "FROM payments py JOIN users u ON py.user_id = u.id "
-            + (f"WHERE py.status='{status}' " if status else "")
-        )
+        base = "FROM payments py JOIN users u ON py.user_id = u.id "
+        params: list = []
+        if status:
+            base += "WHERE py.status = ? "
+            params.append(status)
         rows = conn.execute(
             f"SELECT py.*, u.full_name, u.username, u.telegram_id {base}"
             f"ORDER BY py.id DESC LIMIT ? OFFSET ?",
-            (per_page, offset),
+            (*params, per_page, offset),
         ).fetchall()
-        total = conn.execute(f"SELECT COUNT(*) {base}").fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) {base}", tuple(params)).fetchone()[0]
     return rows_to_list(rows), total
 
 
@@ -519,16 +520,23 @@ def set_payment_notif_chats(payment_id: int, chats: list[dict]):
         )
 
 
-def approve_payment(payment_id: int, admin_note: str = ""):
+def approve_payment(payment_id: int, admin_note: str = "", handled_by: int | None = None) -> bool:
+    """Atomically moves a payment from 'pending' to 'approved'. The WHERE
+    clause on the UPDATE itself (not a separate SELECT check beforehand) is
+    what makes this race-safe: two concurrent callers (e.g. an admin
+    clicking approve at the same instant the auto-payment webhook approves
+    the same payment) can't both succeed — only the first UPDATE actually
+    matches a 'pending' row; the second gets rowcount=0 and returns False."""
     with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE payments SET status='approved', admin_note=?, handled_by=? "
+            "WHERE id=? AND status='pending'",
+            (admin_note, handled_by, payment_id),
+        )
+        if cur.rowcount == 0:
+            return False
         payment = row_to_dict(
             conn.execute("SELECT * FROM payments WHERE id=?", (payment_id,)).fetchone()
-        )
-        if not payment or payment["status"] != "pending":
-            return False
-        conn.execute(
-            "UPDATE payments SET status='approved', admin_note=? WHERE id=?",
-            (admin_note, payment_id),
         )
         conn.execute(
             "UPDATE users SET balance = balance + ? WHERE id=?",
@@ -537,18 +545,63 @@ def approve_payment(payment_id: int, admin_note: str = ""):
         return True
 
 
-def reject_payment(payment_id: int, admin_note: str = "") -> bool:
+def maybe_reward_referral(referred_user_id: int) -> dict | None:
+    """نسخه‌ی sync همون منطق database/db.py/payment_webhook_server.py برای
+    پنل جنگو. فقط روی اولین پرداخت تاییدشده‌ی کاربر معرفی‌شده پاداش می‌ده،
+    دقیقاً یک بار (constraint یکتای referred_user_id تضمینش می‌کنه)."""
+    if get_setting("referral_enabled", "0") != "1":
+        return None
+    try:
+        reward = int(get_setting("referral_reward_amount", "0") or "0")
+    except ValueError:
+        reward = 0
+    if reward <= 0:
+        return None
+
     with get_conn() as conn:
-        payment = row_to_dict(
-            conn.execute("SELECT * FROM payments WHERE id=?", (payment_id,)).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (referred_user_id,)).fetchone()
+        if not user or not user["referred_by"]:
+            return None
+
+        approved_count = conn.execute(
+            "SELECT COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
+            (referred_user_id,),
+        ).fetchone()
+        if not approved_count or approved_count["c"] != 1:
+            return None
+
+        referrer = conn.execute(
+            "SELECT * FROM users WHERE id = ?", (user["referred_by"],)
+        ).fetchone()
+        if not referrer:
+            return None
+
+        try:
+            conn.execute(
+                "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, amount, source) "
+                "VALUES (?, ?, ?, 'first_deposit')",
+                (referrer["id"], referred_user_id, reward),
+            )
+        except sqlite3.IntegrityError:
+            return None  # already rewarded (UNIQUE(referred_user_id))
+
+        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (reward, referrer["id"]))
+        return {
+            "referrer_telegram_id": referrer["telegram_id"],
+            "reward": reward,
+            "referred_name": user["full_name"] or user["username"] or str(user["telegram_id"]),
+        }
+
+
+def reject_payment(payment_id: int, admin_note: str = "", handled_by: int | None = None) -> bool:
+    """Same atomicity reasoning as approve_payment above."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE payments SET status='rejected', admin_note=?, handled_by=? "
+            "WHERE id=? AND status='pending'",
+            (admin_note, handled_by, payment_id),
         )
-        if not payment or payment["status"] != "pending":
-            return False
-        conn.execute(
-            "UPDATE payments SET status='rejected', admin_note=? WHERE id=?",
-            (admin_note, payment_id),
-        )
-        return True
+        return cur.rowcount > 0
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

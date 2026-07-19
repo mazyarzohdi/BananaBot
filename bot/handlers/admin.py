@@ -1,23 +1,36 @@
 """Admin panel handlers."""
 
 import asyncio
+import csv
+import functools
 import html
+import io
 import json
 import logging
 import time
 from datetime import datetime
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot.keyboards import (
     admin_coupon_detail_inline,
     admin_coupons_inline,
     admin_menu,
+    admin_stats_export_inline,
     admin_sub_actions_inline,
+    admin_ticket_detail_inline,
+    admin_ticket_list_inline,
     admin_tutorial_detail_inline,
     admin_tutorials_inline,
     admin_user_services_inline,
@@ -96,6 +109,14 @@ class AdminMsgToUserForm(StatesGroup):
     text = State()
 
 
+class AdminUserNoteForm(StatesGroup):
+    text = State()
+
+
+class AdminTicketReplyForm(StatesGroup):
+    text = State()
+
+
 class AdminBalanceAdjustForm(StatesGroup):
     amount = State()
 
@@ -149,6 +170,11 @@ class AdminResellerEditForm(StatesGroup):
 
 
 def admin_only(handler):
+    """محدود می‌کنه که فقط ادمین‌ها بتونن این هندلر رو اجرا کنن. حتماً باید
+    @functools.wraps داشته باشه — بدون اون، aiogram موقع تزریق وابستگی
+    (state، is_admin، db_user و غیره) امضای واقعی هندلر رو نمی‌بینه و روی
+    هر پارامتر اضافه‌ای که خودِ wrapper نگرفته کرش می‌کنه."""
+    @functools.wraps(handler)
     async def wrapper(event, *args, **kwargs):
         user_id = event.from_user.id
         if user_id not in get_settings().admin_ids:
@@ -180,14 +206,203 @@ async def admin_stats(message: Message):
     panels = len(await db.get_panels(active_only=False))
     products = len(await db.get_products(active_only=False))
     pending = len(await db.get_pending_payments())
-    await message.answer(
-        f"📊 آمار ربات\n\n"
-        f"👥 کاربران: {users}\n"
-        f"📦 سرویس‌های فعال: {subs}\n"
-        f"🖥 پنل‌ها: {panels}\n"
-        f"🏷 محصولات: {products}\n"
-        f"💳 پرداخت در انتظار: {pending}"
+    revenue = await db.get_revenue_stats()
+
+    lines = [
+        "📊 آمار ربات\n",
+        f"👥 کاربران: {users}",
+        f"📦 سرویس‌های فعال: {subs}",
+        f"🖥 پنل‌ها: {panels}",
+        f"🏷 محصولات: {products}",
+        f"💳 پرداخت در انتظار: {pending}\n",
+        "💰 درآمد (از پرداخت‌های تاییدشده):",
+        f"  امروز: {revenue['revenue_today']:,} تومان",
+        f"  این هفته: {revenue['revenue_week']:,} تومان",
+        f"  این ماه: {revenue['revenue_month']:,} تومان",
+        f"  مجموع کل: {revenue['revenue_all_time']:,} تومان",
+        f"  از این مقدار، سهم نمایندگی: {revenue['reseller_revenue_all_time']:,} تومان",
+        f"  تعداد کل واریزی‌های تاییدشده: {revenue['approved_payments_count']}",
+    ]
+    if revenue["top_products"]:
+        lines.append("\n🏆 پرفروش‌ترین محصولات:")
+        for p in revenue["top_products"]:
+            lines.append(f"  • {p['name']}: {p['sales_count']} فروش — {p['revenue']:,} تومان")
+
+    await message.answer("\n".join(lines), reply_markup=admin_stats_export_inline())
+
+
+@router.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery):
+    await callback.answer()
+
+
+@router.callback_query(F.data == "export_users")
+async def export_users_csv(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    db = get_db()
+    users = await db.get_all_users_for_export()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "telegram_id", "username", "full_name", "phone", "balance",
+                      "is_banned", "referred_by", "admin_note", "created_at"])
+    for u in users:
+        writer.writerow([
+            u.get("id"), u.get("telegram_id"), u.get("username") or "", u.get("full_name") or "",
+            u.get("phone") or "", u.get("balance"), u.get("is_banned"), u.get("referred_by") or "",
+            (u.get("admin_note") or "").replace("\n", " "), u.get("created_at"),
+        ])
+    data = buf.getvalue().encode("utf-8-sig")  # BOM so Excel opens Persian text correctly
+    filename = f"users_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    await callback.message.answer_document(
+        BufferedInputFile(data, filename=filename), caption=f"📤 خروجی {len(users)} کاربر"
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "export_payments")
+async def export_payments_csv(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    db = get_db()
+    payments = await db.get_all_payments_for_export()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "telegram_id", "username", "amount", "status", "payment_method",
+                      "admin_note", "created_at"])
+    for p in payments:
+        writer.writerow([
+            p.get("id"), p.get("telegram_id"), p.get("username") or "", p.get("amount"),
+            p.get("status"), p.get("payment_method"), (p.get("admin_note") or "").replace("\n", " "),
+            p.get("created_at"),
+        ])
+    data = buf.getvalue().encode("utf-8-sig")
+    filename = f"payments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    await callback.message.answer_document(
+        BufferedInputFile(data, filename=filename), caption=f"📤 خروجی {len(payments)} پرداخت"
+    )
+    await callback.answer()
+
+
+# --- Support tickets: admin side ---
+
+@router.message(F.text == t("admin_tickets"))
+async def admin_tickets_menu(message: Message):
+    if message.from_user.id not in get_settings().admin_ids:
+        return
+    db = get_db()
+    tickets = await db.get_open_tickets()
+    label = f"🎫 تیکت‌های باز/پاسخ‌داده‌نشده: {len(tickets)}" if tickets else "🎫 تیکت باز/پاسخ‌داده‌نشده‌ای نیست."
+    await message.answer(label, reply_markup=admin_ticket_list_inline(tickets))
+
+
+@router.callback_query(F.data == "aticket_list")
+async def admin_ticket_list_cb(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    db = get_db()
+    tickets = await db.get_open_tickets()
+    label = f"🎫 تیکت‌های باز/پاسخ‌داده‌نشده: {len(tickets)}" if tickets else "🎫 تیکت باز/پاسخ‌داده‌نشده‌ای نیست."
+    await callback.message.edit_text(label, reply_markup=admin_ticket_list_inline(tickets))
+    await callback.answer()
+
+
+async def _admin_ticket_detail_text(db, ticket: dict) -> str:
+    msgs = await db.get_ticket_messages(ticket["id"])
+    status_fa = {"open": "🟢 باز", "answered": "🔵 پاسخ داده‌شده", "closed": "⚪️ بسته‌شده"}
+    who = f"@{ticket['username']}" if ticket.get("username") else (ticket.get("full_name") or ticket["telegram_id"])
+    lines = [
+        f"🎫 تیکت #{ticket['id']} — {status_fa.get(ticket['status'], ticket['status'])}",
+        f"👤 {who} ({ticket['telegram_id']})",
+        f"📝 موضوع: {ticket.get('subject') or '—'}\n",
+    ]
+    for m in msgs:
+        who_msg = "👤 کاربر" if m["sender"] == "user" else "🛠 پشتیبانی"
+        lines.append(f"{who_msg}:\n{m['text']}\n")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("aticket_view:"))
+async def admin_ticket_view(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    ticket_id = int(callback.data.split(":")[1])
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    text = await _admin_ticket_detail_text(db, ticket)
+    await callback.message.edit_text(text, reply_markup=admin_ticket_detail_inline(ticket_id, ticket["status"]))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("aticket_reply:"))
+async def admin_ticket_reply_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    ticket_id = int(callback.data.split(":")[1])
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    await state.update_data(ticket_id=ticket_id)
+    await state.set_state(AdminTicketReplyForm.text)
+    await callback.message.answer(f"✍️ پاسخ برای تیکت #{ticket_id} را بنویسید:", reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdminTicketReplyForm.text)
+@admin_only
+async def admin_ticket_reply_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id) if ticket_id else None
+    if not ticket:
+        await state.clear()
+        await message.answer("این تیکت دیگر در دسترس نیست.", reply_markup=admin_menu())
+        return
+    reply_text = (message.text or "").strip()
+    await db.add_ticket_message(ticket_id, "admin", reply_text)
+    await db.set_ticket_status(ticket_id, "answered")
+    await state.clear()
+    await message.answer(f"✅ پاسخ شما به تیکت #{ticket_id} ارسال شد.", reply_markup=admin_menu())
+    try:
+        await message.bot.send_message(
+            ticket["telegram_id"],
+            f"🎫 پاسخ جدید روی تیکت #{ticket_id}:\n\n{reply_text}",
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("aticket_close:"))
+async def admin_ticket_close(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    ticket_id = int(callback.data.split(":")[1])
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    await db.set_ticket_status(ticket_id, "closed")
+    ticket = await db.get_ticket(ticket_id)
+    text = await _admin_ticket_detail_text(db, ticket)
+    await callback.message.edit_text(text, reply_markup=admin_ticket_detail_inline(ticket_id, "closed"))
+    await callback.answer("🔒 تیکت بسته شد.")
+    try:
+        await callback.bot.send_message(
+            ticket["telegram_id"], f"🔒 تیکت #{ticket_id} توسط پشتیبانی بسته شد."
+        )
+    except Exception:
+        pass
 
 
 # --- Panels ---
@@ -215,6 +430,7 @@ async def add_panel_start(message: Message, state: FSMContext):
 
 
 @router.message(AdminPanelForm.name)
+@admin_only
 async def add_panel_name(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -226,6 +442,7 @@ async def add_panel_name(message: Message, state: FSMContext):
 
 
 @router.message(AdminPanelForm.url)
+@admin_only
 async def add_panel_url(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -237,6 +454,7 @@ async def add_panel_url(message: Message, state: FSMContext):
 
 
 @router.message(AdminPanelForm.api_token)
+@admin_only
 async def add_panel_token(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -251,6 +469,7 @@ async def add_panel_token(message: Message, state: FSMContext):
 
 
 @router.message(AdminPanelForm.inbound_ids)
+@admin_only
 async def add_panel_inbounds(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -274,6 +493,7 @@ async def add_panel_inbounds(message: Message, state: FSMContext):
 
 
 @router.message(AdminPanelForm.sub_link_sample)
+@admin_only
 async def add_panel_sub_link(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -313,6 +533,7 @@ async def add_panel_sub_link(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("set_sublink:"))
+@admin_only
 async def set_sublink_start(callback: CallbackQuery, state: FSMContext):
     panel_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -332,6 +553,7 @@ async def set_sublink_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminPanelSubLinkForm.value)
+@admin_only
 async def set_sublink_save(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -374,6 +596,7 @@ async def panel_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "admin_panels_back")
+@admin_only
 async def admin_panels_back(callback: CallbackQuery):
     db = get_db()
     panels = await db.get_panels(active_only=False)
@@ -382,6 +605,7 @@ async def admin_panels_back(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("test_panel:"))
+@admin_only
 async def test_panel(callback: CallbackQuery):
     panel_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -399,6 +623,7 @@ async def test_panel(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("inbounds:"))
+@admin_only
 async def list_inbounds(callback: CallbackQuery):
     panel_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -461,6 +686,7 @@ async def edit_inbounds_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminPanelEditInboundsForm.inbound_ids)
+@admin_only
 async def edit_inbounds_save(message: Message, state: FSMContext):
     """ذخیره Inbounds جدید در دیتابیس."""
     if message.text == t("cancel"):
@@ -498,6 +724,7 @@ async def edit_inbounds_save(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("del_panel:"))
+@admin_only
 async def del_panel(callback: CallbackQuery):
     panel_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -563,6 +790,7 @@ async def admin_products(message: Message):
 
 
 @router.callback_query(F.data == "admin_products_back")
+@admin_only
 async def admin_products_back(callback: CallbackQuery):
     db = get_db()
     products = await db.get_products(active_only=False)
@@ -571,6 +799,7 @@ async def admin_products_back(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "add_product")
+@admin_only
 async def add_product_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminProductForm.name)
     await callback.message.answer("📝 نام محصول:", reply_markup=cancel_kb())
@@ -578,6 +807,7 @@ async def add_product_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminProductForm.name)
+@admin_only
 async def add_product_name(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -596,6 +826,7 @@ async def add_product_name(message: Message, state: FSMContext):
 
 
 @router.message(AdminProductForm.panel_id)
+@admin_only
 async def add_product_panel(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -611,6 +842,7 @@ async def add_product_panel(message: Message, state: FSMContext):
 
 
 @router.message(AdminProductForm.volume_gb)
+@admin_only
 async def add_product_volume(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -626,6 +858,7 @@ async def add_product_volume(message: Message, state: FSMContext):
 
 
 @router.message(AdminProductForm.duration_days)
+@admin_only
 async def add_product_days(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -641,6 +874,7 @@ async def add_product_days(message: Message, state: FSMContext):
 
 
 @router.message(AdminProductForm.price)
+@admin_only
 async def add_product_price(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -675,6 +909,7 @@ def _product_detail_text(product: dict) -> str:
 
 
 @router.callback_query(F.data.startswith("prod:"))
+@admin_only
 async def product_detail(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -690,6 +925,7 @@ async def product_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_en:"))
+@admin_only
 async def enable_product(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -703,6 +939,7 @@ async def enable_product(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_dis:"))
+@admin_only
 async def disable_product(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -716,6 +953,7 @@ async def disable_product(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_del_yes:"))
+@admin_only
 async def delete_product_confirmed(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -734,6 +972,7 @@ async def delete_product_confirmed(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_del_no:"))
+@admin_only
 async def delete_product_cancelled(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -749,6 +988,7 @@ async def delete_product_cancelled(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_del:"))
+@admin_only
 async def delete_product_ask(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -765,6 +1005,7 @@ async def delete_product_ask(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("prod_edit:"))
+@admin_only
 async def edit_product_menu(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -790,6 +1031,7 @@ _EDIT_FIELD_PROMPTS = {
 
 
 @router.callback_query(F.data.startswith("prod_editf:"))
+@admin_only
 async def edit_product_field_start(callback: CallbackQuery, state: FSMContext):
     _, product_id, field = callback.data.split(":")
     product_id = int(product_id)
@@ -816,6 +1058,7 @@ async def edit_product_field_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminProductEditForm.value)
+@admin_only
 async def edit_product_field_save(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -963,6 +1206,17 @@ async def pay_confirm(callback: CallbackQuery, is_admin: bool):
         except Exception:
             pass
 
+        referral = await db.maybe_reward_referral(payment["user_id"])
+        if referral:
+            try:
+                await callback.bot.send_message(
+                    referral["referrer_telegram_id"],
+                    f"🤝 پاداش معرفی: {referral['reward']:,} تومان بابت اولین شارژ «{referral['referred_name']}» "
+                    "به کیف پول شما اضافه شد!",
+                )
+            except Exception:
+                pass
+
     await _finalize_payment_messages(
         callback.bot, db, payment,
         _payment_status_text(payment, "approved", callback.from_user.id),
@@ -1024,6 +1278,8 @@ async def _render_user_card(db, tid: int):
         f"📦 سرویس‌های فعال: {len(active)} (کل: {len(subs)})\n"
         f"وضعیت: {'🚫 بن‌شده' if banned else '✅ فعال'}"
     )
+    if user.get("admin_note"):
+        text += f"\n📝 یادداشت: {html.escape(user['admin_note'])}"
     markup = user_admin_card_inline(tid, banned)
     return text, markup
 
@@ -1073,6 +1329,7 @@ async def ulist_page(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "ulist_noop")
+@admin_only
 async def ulist_noop(callback: CallbackQuery):
     await callback.answer()
 
@@ -1091,6 +1348,7 @@ async def ulist_search_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminUserSearchForm.query)
+@admin_only
 async def ulist_search_do(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1240,7 +1498,52 @@ async def uadm_msg_start(callback: CallbackQuery, is_admin: bool, state: FSMCont
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("uadm_note:"))
+async def uadm_note_start(callback: CallbackQuery, is_admin: bool, state: FSMContext):
+    if not is_admin:
+        return
+    tid = int(callback.data.split(":")[1])
+    db = get_db()
+    user = await db.get_user_by_telegram_id(tid)
+    if not user:
+        await callback.answer("کاربر پیدا نشد", show_alert=True)
+        return
+    await state.update_data(target_tid=tid)
+    await state.set_state(AdminUserNoteForm.text)
+    current = f"\n\nیادداشت فعلی:\n{user['admin_note']}" if user.get("admin_note") else ""
+    await callback.message.answer(
+        f"📝 یادداشت برای کاربر {tid} را بفرستید (این فقط برای ادمین‌ها نمایش داده می‌شود، "
+        f"خود کاربر آن را نمی‌بیند). برای پاک کردن یادداشت، یک خط تیره (-) بفرستید.{current}",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminUserNoteForm.text)
+@admin_only
+async def uadm_note_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    data = await state.get_data()
+    tid = data["target_tid"]
+    db = get_db()
+    user = await db.get_user_by_telegram_id(tid)
+    if not user:
+        await message.answer("کاربر پیدا نشد", reply_markup=admin_menu())
+        await state.clear()
+        return
+    note = "" if (message.text or "").strip() == "-" else (message.text or "").strip()
+    await db.set_user_note(user["id"], note)
+    await state.clear()
+    text, markup = await _render_user_card(db, tid)
+    await message.answer("✅ یادداشت ذخیره شد.", reply_markup=admin_menu())
+    await message.answer(text, reply_markup=markup)
+
+
 @router.message(AdminMsgToUserForm.text)
+@admin_only
 async def uadm_msg_send(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1285,6 +1588,7 @@ async def uadm_subbal_start(callback: CallbackQuery, is_admin: bool, state: FSMC
 
 
 @router.message(AdminBalanceAdjustForm.amount)
+@admin_only
 async def uadm_balance_apply(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1419,6 +1723,7 @@ async def add_faq_start(message: Message, state: FSMContext):
 
 
 @router.message(AdminFAQForm.question)
+@admin_only
 async def add_faq_question(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1430,6 +1735,7 @@ async def add_faq_question(message: Message, state: FSMContext):
 
 
 @router.message(AdminFAQForm.answer)
+@admin_only
 async def add_faq_answer(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1465,6 +1771,7 @@ async def broadcast_start(message: Message, state: FSMContext):
 
 
 @router.message(AdminBroadcastForm.text)
+@admin_only
 async def broadcast_send(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1472,13 +1779,35 @@ async def broadcast_send(message: Message, state: FSMContext):
         return
     db = get_db()
     users = await db._fetchall("SELECT telegram_id FROM users")
+    total = len(users)
     ok, fail = 0, 0
-    for u in users:
-        try:
-            await message.bot.send_message(u["telegram_id"], message.text)
-            ok += 1
-        except Exception:
+    progress_msg = await message.answer(f"⏳ در حال ارسال... 0 / {total}")
+    for i, u in enumerate(users, start=1):
+        for attempt in range(3):
+            try:
+                await message.bot.send_message(u["telegram_id"], message.text)
+                ok += 1
+                break
+            except TelegramRetryAfter as e:
+                # Telegram itself is telling us to slow down — this is not a
+                # failure, just back off exactly as long as it asked and
+                # retry the SAME user, so they still receive the broadcast.
+                await asyncio.sleep(e.retry_after)
+                continue
+            except Exception:
+                fail += 1
+                break
+        else:
             fail += 1
+        # A small pause between sends keeps us safely under Telegram's
+        # ~30 messages/second global flood limit, so most users never
+        # trigger TelegramRetryAfter in the first place.
+        await asyncio.sleep(0.05)
+        if i % 25 == 0 or i == total:
+            try:
+                await progress_msg.edit_text(f"⏳ در حال ارسال... {i} / {total}")
+            except Exception:
+                pass
     await state.clear()
     await message.answer(f"✅ ارسال شد: {ok} | ❌ ناموفق: {fail}", reply_markup=admin_menu())
 
@@ -1501,6 +1830,14 @@ _SETTINGS_META = {
     "auto_payment_enabled": {"label": "🤖 تایید خودکار پرداخت (پیامک بانکی)", "hint": "1 = فعال (تشخیص خودکار از روی پیامک بانک)، 0 = غیرفعال (روش قبلی: ارسال رسید و تأیید دستی ادمین)"},
     "auto_payment_secret":  {"label": "🔑 کلید امنیتی وبهوک پیامک", "hint": "این مقدار باید دقیقاً همون چیزی باشه که در هدر X-Webhook-Secret برنامه‌ی فورواردر پیامک تنظیم می‌کنید. برای امنیت، یک رشته‌ی تصادفی و طولانی انتخاب کنید."},
     "auto_payment_port":    {"label": "🔌 پورت وبهوک پرداخت خودکار", "hint": "پورتی که سرویس مستقل وبهوک پیامک بانکی روی آن گوش می‌دهد — کاملاً جدا از پورت پنل وب مینی‌اپ. بعد از تغییر، این سرویس خودکار ری‌استارت می‌شود تا پورت جدید اعمال شود. مطمئن شوید این پورت در فایروال سرور باز است."},
+    "support_contact_enabled": {"label": "📞 نمایش آیدی پشتیبانی (فعال/غیرفعال)", "hint": "1 = فعال (متن/آیدی پشتیبانی بالای بخش پشتیبانی نمایش داده می‌شود)، 0 = غیرفعال (فقط گزینه‌ی تیکت نمایش داده می‌شود)"},
+    "expiry_reminder_enabled": {"label": "⏰ یادآور انقضا (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال. با فعال بودن، کاربران و نمایندگان قبل از انقضای سرویس/نمایندگی‌شان پیام یادآوری دریافت می‌کنند."},
+    "expiry_reminder_days_before": {"label": "⏰ فاصله یادآور انقضا (روز)", "hint": "چند روز قبل از انقضا به کاربر/نماینده پیام یادآوری فرستاده شود. مثال: 3"},
+    "referral_enabled": {"label": "🤝 سیستم معرفی (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال"},
+    "referral_reward_amount": {"label": "🤝 مبلغ پاداش معرفی (تومان)", "hint": "مبلغی که به معرف، بعد از اولین شارژ موفق کاربر معرفی‌شده، به کیف پولش اضافه می‌شود. 0 = بدون پاداش."},
+    "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال. با فعال بودن، دیتابیس ربات و دیتابیس هر پنل X-UI به‌صورت خودکار بکاپ گرفته و برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود."},
+    "backup_schedule_interval_hours": {"label": "🗄 فاصله بکاپ خودکار (ساعت)", "hint": "هر چند ساعت یک‌بار بکاپ خودکار گرفته شود. مثال: 24 (هر روز یک‌بار)"},
+    "backup_schedule_retention_count": {"label": "🗄 تعداد بکاپ‌های نگه‌داشته‌شده", "hint": "چند بکاپ خودکار اخیر روی سرور نگه‌داشته شود؛ بکاپ‌های خودکار قدیمی‌تر خودکار پاک می‌شوند. مثال: 14"},
 }
 
 _SETTINGS_KEYS = list(_SETTINGS_META.keys())
@@ -1534,6 +1871,7 @@ async def admin_settings(message: Message):
 
 
 @router.callback_query(F.data == "cfg_back")
+@admin_only
 async def cfg_back(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     db = get_db()
@@ -1598,6 +1936,7 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminSettingsForm.value)
+@admin_only
 async def cfg_save_value(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1648,12 +1987,12 @@ async def cfg_save_value(message: Message, state: FSMContext):
         except (ValueError, AssertionError):
             await message.answer("❌ باید یک عدد مثبت باشد.")
             return
-    if key == "channel_invite_link" and value != "-":
-        if not (value.startswith("http://") or value.startswith("https://")):
-            await message.answer("❌ لینک باید با http:// یا https:// شروع شود.")
-            return
+    if key == "channel_invite_link":
         if value == "-":
             value = ""
+        elif not (value.startswith("http://") or value.startswith("https://")):
+            await message.answer("❌ لینک باید با http:// یا https:// شروع شود.")
+            return
 
     await db.set_setting(key, value)
     await state.clear()
@@ -1705,6 +2044,7 @@ async def set_channel_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminChannelForm.channel_id)
+@admin_only
 async def set_channel_id(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1731,6 +2071,7 @@ async def set_channel_id(message: Message, state: FSMContext):
 
 
 @router.message(AdminChannelForm.invite_link)
+@admin_only
 async def set_channel_invite_link(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1805,6 +2146,7 @@ async def adm_tut_add_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminTutorialForm.title)
+@admin_only
 async def adm_tut_title(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1823,6 +2165,7 @@ async def adm_tut_title(message: Message, state: FSMContext):
 
 
 @router.message(AdminTutorialForm.content)
+@admin_only
 async def adm_tut_content(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -1960,6 +2303,7 @@ async def adm_coup_add_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("coup_mode:"), AdminCouponForm.code_mode)
+@admin_only
 async def adm_coup_mode(callback: CallbackQuery, state: FSMContext):
     mode = callback.data.split(":")[1]
     if mode == "random":
@@ -1982,6 +2326,7 @@ async def adm_coup_mode(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminCouponForm.code)
+@admin_only
 async def adm_coup_code(message: Message, state: FSMContext):
     code = (message.text or "").strip().upper()
     if not code or len(code) < 3:
@@ -2005,6 +2350,7 @@ async def adm_coup_code(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("coup_dtype:"), AdminCouponForm.discount_type)
+@admin_only
 async def adm_coup_dtype(callback: CallbackQuery, state: FSMContext):
     dtype = callback.data.split(":")[1]
     await state.update_data(discount_type=dtype)
@@ -2015,6 +2361,7 @@ async def adm_coup_dtype(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminCouponForm.discount_value)
+@admin_only
 async def adm_coup_dvalue(message: Message, state: FSMContext):
     try:
         val = int((message.text or "").strip().replace(",", ""))
@@ -2039,6 +2386,7 @@ async def adm_coup_dvalue(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("coup_utype:"), AdminCouponForm.usage_type)
+@admin_only
 async def adm_coup_utype(callback: CallbackQuery, state: FSMContext):
     utype = callback.data.split(":")[1]
     await state.update_data(usage_type=utype)
@@ -2050,6 +2398,7 @@ async def adm_coup_utype(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminCouponForm.max_uses)
+@admin_only
 async def adm_coup_maxuses(message: Message, state: FSMContext):
     try:
         max_u = int((message.text or "").strip())
@@ -2133,6 +2482,7 @@ async def admin_reseller_menu(message: Message):
 
 
 @router.callback_query(F.data == "admin_resplans_back")
+@admin_only
 async def admin_resplans_back(callback: CallbackQuery):
     db = get_db()
     plans = await db.get_reseller_plans(active_only=False)
@@ -2144,6 +2494,7 @@ async def admin_resplans_back(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "add_resplan")
+@admin_only
 async def add_resplan_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminResellerPlanForm.name)
     await callback.message.answer("📝 نام پلن نمایندگی:", reply_markup=cancel_kb())
@@ -2151,6 +2502,7 @@ async def add_resplan_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminResellerPlanForm.name)
+@admin_only
 async def add_resplan_name(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2169,6 +2521,7 @@ async def add_resplan_name(message: Message, state: FSMContext):
 
 
 @router.message(AdminResellerPlanForm.panel_id)
+@admin_only
 async def add_resplan_panel(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2184,6 +2537,7 @@ async def add_resplan_panel(message: Message, state: FSMContext):
 
 
 @router.message(AdminResellerPlanForm.volume_gb)
+@admin_only
 async def add_resplan_volume(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2199,6 +2553,7 @@ async def add_resplan_volume(message: Message, state: FSMContext):
 
 
 @router.message(AdminResellerPlanForm.duration_days)
+@admin_only
 async def add_resplan_days(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2214,6 +2569,7 @@ async def add_resplan_days(message: Message, state: FSMContext):
 
 
 @router.message(AdminResellerPlanForm.price)
+@admin_only
 async def add_resplan_price(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2243,6 +2599,7 @@ def _resplan_detail_text(plan: dict) -> str:
 
 
 @router.callback_query(F.data.startswith("resplan:"))
+@admin_only
 async def resplan_detail(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2257,6 +2614,7 @@ async def resplan_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_en:"))
+@admin_only
 async def resplan_enable(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2269,6 +2627,7 @@ async def resplan_enable(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_dis:"))
+@admin_only
 async def resplan_disable(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2281,6 +2640,7 @@ async def resplan_disable(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_del_yes:"))
+@admin_only
 async def resplan_delete_confirmed(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2301,6 +2661,7 @@ async def resplan_delete_confirmed(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_del_no:"))
+@admin_only
 async def resplan_delete_cancelled(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2315,6 +2676,7 @@ async def resplan_delete_cancelled(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_del:"))
+@admin_only
 async def resplan_delete_ask(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2330,6 +2692,7 @@ async def resplan_delete_ask(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resplan_edit:"))
+@admin_only
 async def resplan_edit_menu(callback: CallbackQuery):
     plan_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2355,6 +2718,7 @@ _RESPLAN_EDIT_FIELD_PROMPTS = {
 
 
 @router.callback_query(F.data.startswith("resplan_editf:"))
+@admin_only
 async def resplan_edit_field_start(callback: CallbackQuery, state: FSMContext):
     _, plan_id, field = callback.data.split(":")
     plan_id = int(plan_id)
@@ -2381,6 +2745,7 @@ async def resplan_edit_field_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminResellerPlanEditForm.value)
+@admin_only
 async def resplan_edit_field_save(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2425,6 +2790,7 @@ async def resplan_edit_field_save(message: Message, state: FSMContext):
 # --- بررسی نمایندگان توسط ادمین‌های اصلی ---
 
 @router.callback_query(F.data == "resellers_list")
+@admin_only
 async def resellers_list(callback: CallbackQuery):
     db = get_db()
     resellers = await db.get_all_resellers()
@@ -2467,6 +2833,7 @@ async def _reseller_detail_text(db, reseller: dict) -> str:
 
 
 @router.callback_query(F.data.startswith("resv:"))
+@admin_only
 async def reseller_detail(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2480,6 +2847,7 @@ async def reseller_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resv_dis:"))
+@admin_only
 async def reseller_disable(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2500,6 +2868,7 @@ async def reseller_disable(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resv_en:"))
+@admin_only
 async def reseller_enable(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2521,6 +2890,7 @@ async def reseller_enable(callback: CallbackQuery):
 # --- Manual quota/expiry correction (e.g. fixing a mistake at signup) ---
 
 @router.callback_query(F.data.startswith("resv_editq:"))
+@admin_only
 async def reseller_edit_quota_start(callback: CallbackQuery, state: FSMContext):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2538,6 +2908,7 @@ async def reseller_edit_quota_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("resv_edite:"))
+@admin_only
 async def reseller_edit_expiry_start(callback: CallbackQuery, state: FSMContext):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2555,6 +2926,7 @@ async def reseller_edit_expiry_start(callback: CallbackQuery, state: FSMContext)
 
 
 @router.message(AdminResellerEditForm.value)
+@admin_only
 async def reseller_edit_save(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
@@ -2596,6 +2968,7 @@ async def reseller_edit_save(message: Message, state: FSMContext):
 # --- Full reseller deletion ---
 
 @router.callback_query(F.data.startswith("resv_del:"))
+@admin_only
 async def reseller_delete_ask(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2623,6 +2996,7 @@ async def reseller_delete_ask(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resv_del_yes:"))
+@admin_only
 async def reseller_delete_confirmed(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()
@@ -2676,6 +3050,7 @@ async def reseller_delete_confirmed(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("resv_del_no:"))
+@admin_only
 async def reseller_delete_cancelled(callback: CallbackQuery):
     reseller_id = int(callback.data.split(":")[1])
     db = get_db()

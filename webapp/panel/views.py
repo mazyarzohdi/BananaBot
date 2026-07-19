@@ -406,14 +406,22 @@ def admin_payment_detail(request: HttpRequest, payment_id: int):
     if request.method == "POST":
         action = request.POST.get("action")
         note = request.POST.get("note", "")
+        admin_tid = (request.session.get("tg_user") or {}).get("id")
         if action == "approve":
-            if bot_db.approve_payment(payment_id, note):
+            if bot_db.approve_payment(payment_id, note, handled_by=admin_tid):
                 _notify_payment_status(payment, "approved", note)
+                referral = bot_db.maybe_reward_referral(payment["user_id"])
+                if referral:
+                    telegram_api.send_message(
+                        referral["referrer_telegram_id"],
+                        f"🤝 پاداش معرفی: {referral['reward']:,} تومان بابت اولین شارژ "
+                        f"«{referral['referred_name']}» به کیف پول شما اضافه شد!",
+                    )
                 messages.success(request, "پرداخت تأیید و موجودی شارژ شد. به کاربر اطلاع داده شد.")
             else:
                 messages.warning(request, "این پرداخت قبلاً بررسی شده بود.")
         elif action == "reject":
-            if bot_db.reject_payment(payment_id, note):
+            if bot_db.reject_payment(payment_id, note, handled_by=admin_tid):
                 _notify_payment_status(payment, "rejected", note)
                 messages.warning(request, "پرداخت رد شد. به کاربر اطلاع داده شد.")
             else:

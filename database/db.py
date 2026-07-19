@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 
 import aiosqlite
 from pathlib import Path
@@ -92,7 +93,7 @@ class Database:
 
     async def update_user_balance(self, user_id: int, amount: int) -> int:
         await self._execute(
-            "UPDATE users SET balance = balance + ? WHERE id = ?",
+            "UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?",
             (amount, user_id),
         )
         user = await self._fetchone("SELECT balance FROM users WHERE id = ?", (user_id,))
@@ -108,6 +109,84 @@ class Database:
         await self._execute(
             "UPDATE users SET phone = ? WHERE id = ?", (phone, user_id)
         )
+
+    async def set_user_note(self, user_id: int, note: str):
+        await self._execute(
+            "UPDATE users SET admin_note = ? WHERE id = ?", (note, user_id)
+        )
+
+    async def set_user_referred_by(self, user_id: int, referrer_user_id: int):
+        """فقط اگه کاربر قبلاً معرف نداشته باشه ثبت می‌شه (یکبار برای
+        همیشه، توسط اولین لینک معرفی که باهاش وارد شده)."""
+        await self._execute(
+            "UPDATE users SET referred_by = ? WHERE id = ? AND referred_by IS NULL",
+            (referrer_user_id, user_id),
+        )
+
+    async def get_referral_stats(self, user_id: int) -> dict:
+        count_row = await self._fetchone(
+            "SELECT COUNT(*) as c FROM users WHERE referred_by = ?", (user_id,)
+        )
+        earned_row = await self._fetchone(
+            "SELECT COALESCE(SUM(amount), 0) as total FROM referral_earnings "
+            "WHERE referrer_user_id = ?",
+            (user_id,),
+        )
+        return {
+            "referred_count": count_row["c"] if count_row else 0,
+            "total_earned": earned_row["total"] if earned_row else 0,
+        }
+
+    async def maybe_reward_referral(self, referred_user_id: int) -> dict | None:
+        """وقتی اولین پرداخت یک کاربر تایید می‌شه صدا زده می‌شه. اگه سیستم
+        رفرال فعال باشه، این کاربر معرف داشته باشه، و قبلاً پاداشی برای
+        همین کاربر پرداخت نشده باشه، مبلغ پاداش رو به موجودی معرف اضافه
+        می‌کنه و یک بار برای همیشه ثبتش می‌کنه (جدول referral_earnings
+        محدودیت UNIQUE روی referred_user_id داره، پس دوباره‌کاری امکان‌پذیر
+        نیست حتی در شرایط رقابتی). خروجی: اطلاعات لازم برای اطلاع‌رسانی به
+        معرف، یا None اگه واجد شرایط نبود."""
+        if await self.get_setting("referral_enabled", "0") != "1":
+            return None
+        try:
+            reward = int(await self.get_setting("referral_reward_amount", "0") or "0")
+        except ValueError:
+            reward = 0
+        if reward <= 0:
+            return None
+
+        user = await self._fetchone("SELECT * FROM users WHERE id = ?", (referred_user_id,))
+        if not user or not user.get("referred_by"):
+            return None
+
+        # Only reward on the referred user's FIRST-ever approved payment.
+        approved_count = await self._fetchone(
+            "SELECT COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
+            (referred_user_id,),
+        )
+        if not approved_count or approved_count["c"] != 1:
+            return None
+
+        referrer_id = user["referred_by"]
+        referrer = await self._fetchone("SELECT * FROM users WHERE id = ?", (referrer_id,))
+        if not referrer:
+            return None
+
+        try:
+            await self._execute(
+                "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, amount, source) "
+                "VALUES (?, ?, ?, 'first_deposit')",
+                (referrer_id, referred_user_id, reward),
+            )
+        except Exception:
+            # UNIQUE(referred_user_id) already has a row — reward already granted.
+            return None
+
+        await self.update_user_balance(referrer_id, reward)
+        return {
+            "referrer_telegram_id": referrer["telegram_id"],
+            "reward": reward,
+            "referred_name": user.get("full_name") or user.get("username") or str(user.get("telegram_id")),
+        }
 
     async def get_all_users_count(self, search: str = "") -> int:
         if search:
@@ -276,15 +355,62 @@ class Database:
     async def update_subscription(self, sub_id: int, **fields):
         allowed = {
             "config_link", "config_links", "sub_link", "status", "expiry_time",
-            "volume_gb", "email", "sub_id",
+            "volume_gb", "email", "sub_id", "auto_renew",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
         cols = ", ".join(f"{k} = ?" for k in updates)
+        if "expiry_time" in updates:
+            # renewal — this subscription's expiry moved, so any reminder
+            # already sent for the OLD expiry no longer applies. Clearing
+            # this lets the next expiry cycle send a fresh reminder.
+            cols += ", reminder_sent_at = NULL"
         await self._execute(
             f"UPDATE subscriptions SET {cols} WHERE id = ?",
             (*updates.values(), sub_id),
+        )
+
+    async def set_subscription_auto_renew(self, sub_id: int, enabled: bool):
+        await self._execute(
+            "UPDATE subscriptions SET auto_renew = ? WHERE id = ?",
+            (1 if enabled else 0, sub_id),
+        )
+
+    async def get_subscriptions_due_for_reminder(self, days_before: int) -> list[dict]:
+        """سرویس‌های فعالی که تا days_before روز دیگه منقضی می‌شن و هنوز
+        یادآوری براشون فرستاده نشده. expiry_time روی این جدول به میلی‌ثانیه‌ست."""
+        now_ms = int(time.time() * 1000)
+        threshold_ms = now_ms + days_before * 86400 * 1000
+        return await self._fetchall(
+            "SELECT s.*, u.telegram_id, u.username FROM subscriptions s "
+            "JOIN users u ON s.user_id = u.id "
+            "WHERE s.status = 'active' AND s.expiry_time > ? AND s.expiry_time <= ? "
+            "AND s.reminder_sent_at IS NULL",
+            (now_ms, threshold_ms),
+        )
+
+    async def mark_subscription_reminder_sent(self, sub_id: int):
+        await self._execute(
+            "UPDATE subscriptions SET reminder_sent_at = datetime('now') WHERE id = ?",
+            (sub_id,),
+        )
+
+    async def get_subscriptions_due_for_auto_renew(self) -> list[dict]:
+        """سرویس‌های فعالی که تمدید خودکار براشون روشنه و همین الان (یا
+        قبلاً) منقضی شدن — برای تلاش تمدید خودکار از کیف پول."""
+        now_ms = int(time.time() * 1000)
+        return await self._fetchall(
+            "SELECT s.*, u.telegram_id, u.balance as user_balance, "
+            "p.price as product_price, p.name as product_name, "
+            "p.volume_gb as product_volume_gb, p.duration_days as product_duration_days, "
+            "p.is_active as product_is_active "
+            "FROM subscriptions s "
+            "JOIN users u ON s.user_id = u.id "
+            "LEFT JOIN products p ON s.product_id = p.id "
+            "WHERE s.status = 'active' AND s.auto_renew = 1 "
+            "AND s.expiry_time > 0 AND s.expiry_time <= ?",
+            (now_ms,),
         )
 
     async def user_has_trial(self, user_id: int) -> bool:
@@ -711,7 +837,7 @@ class Database:
         if existing:
             await self._execute(
                 "UPDATE resellers SET plan_id = ?, panel_id = ?, quota_gb = ?, "
-                "expires_at = ?, status = 'active' WHERE id = ?",
+                "expires_at = ?, status = 'active', reminder_sent_at = NULL WHERE id = ?",
                 (plan_id, panel_id, quota_gb, expires_at, existing["id"]),
             )
             return existing["id"]
@@ -734,9 +860,28 @@ class Database:
         if not updates:
             return
         cols = ", ".join(f"{k} = ?" for k in updates)
+        if "expires_at" in updates:
+            cols += ", reminder_sent_at = NULL"
         await self._execute(
             f"UPDATE resellers SET {cols} WHERE id = ?",
             (*updates.values(), reseller_id),
+        )
+
+    async def get_resellers_due_for_reminder(self, days_before: int) -> list[dict]:
+        now = int(time.time())
+        threshold = now + days_before * 86400
+        return await self._fetchall(
+            "SELECT r.*, u.telegram_id, u.username FROM resellers r "
+            "JOIN users u ON r.user_id = u.id "
+            "WHERE r.status = 'active' AND r.expires_at > ? AND r.expires_at <= ? "
+            "AND r.reminder_sent_at IS NULL",
+            (now, threshold),
+        )
+
+    async def mark_reseller_reminder_sent(self, reseller_id: int):
+        await self._execute(
+            "UPDATE resellers SET reminder_sent_at = datetime('now') WHERE id = ?",
+            (reseller_id,),
         )
 
     async def delete_reseller(self, reseller_id: int):
@@ -824,6 +969,118 @@ class Database:
         await self._execute(
             f"UPDATE reseller_configs SET {cols} WHERE id = ?",
             (*updates.values(), config_id),
+        )
+
+    # --- Support tickets ---
+    async def create_ticket(self, user_id: int, subject: str, first_message: str) -> int:
+        ticket_id = await self._execute(
+            "INSERT INTO support_tickets (user_id, subject, status) VALUES (?, ?, 'open')",
+            (user_id, subject),
+        )
+        await self._execute(
+            "INSERT INTO support_ticket_messages (ticket_id, sender, text) VALUES (?, 'user', ?)",
+            (ticket_id, first_message),
+        )
+        return ticket_id
+
+    async def add_ticket_message(self, ticket_id: int, sender: str, text: str):
+        await self._execute(
+            "INSERT INTO support_ticket_messages (ticket_id, sender, text) VALUES (?, ?, ?)",
+            (ticket_id, sender, text),
+        )
+        await self._execute(
+            "UPDATE support_tickets SET updated_at = datetime('now') WHERE id = ?",
+            (ticket_id,),
+        )
+
+    async def get_ticket(self, ticket_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT t.*, u.telegram_id, u.username, u.full_name FROM support_tickets t "
+            "JOIN users u ON t.user_id = u.id WHERE t.id = ?",
+            (ticket_id,),
+        )
+
+    async def get_ticket_messages(self, ticket_id: int) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM support_ticket_messages WHERE ticket_id = ? ORDER BY id ASC",
+            (ticket_id,),
+        )
+
+    async def get_user_tickets(self, user_id: int) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM support_tickets WHERE user_id = ? ORDER BY id DESC",
+            (user_id,),
+        )
+
+    async def get_open_tickets(self) -> list[dict]:
+        return await self._fetchall(
+            "SELECT t.*, u.telegram_id, u.username, u.full_name FROM support_tickets t "
+            "JOIN users u ON t.user_id = u.id WHERE t.status != 'closed' "
+            "ORDER BY t.updated_at DESC"
+        )
+
+    async def set_ticket_status(self, ticket_id: int, status: str):
+        await self._execute(
+            "UPDATE support_tickets SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, ticket_id),
+        )
+
+    # --- Financial stats ---
+    async def get_revenue_stats(self) -> dict:
+        """جمع مبلغ پرداخت‌های تاییدشده (واریزی کیف پول) در بازه‌های
+        زمانی مختلف، به‌علاوه پرفروش‌ترین محصولات بر اساس تعداد فروش
+        ثبت‌شده در جدول subscriptions."""
+        async def _sum_since(hours: float | None) -> int:
+            if hours is None:
+                row = await self._fetchone(
+                    "SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'approved'"
+                )
+            else:
+                row = await self._fetchone(
+                    "SELECT COALESCE(SUM(amount), 0) as total FROM payments "
+                    "WHERE status = 'approved' AND created_at >= datetime('now', ?)",
+                    (f"-{hours} hours",),
+                )
+            return row["total"] if row else 0
+
+        today = await _sum_since(24)
+        week = await _sum_since(24 * 7)
+        month = await _sum_since(24 * 30)
+        all_time = await _sum_since(None)
+
+        top_products = await self._fetchall(
+            "SELECT p.name, COUNT(*) as sales_count, COALESCE(SUM(p.price), 0) as revenue "
+            "FROM subscriptions s JOIN products p ON s.product_id = p.id "
+            "GROUP BY s.product_id ORDER BY sales_count DESC LIMIT 5"
+        )
+
+        reseller_revenue_row = await self._fetchone(
+            "SELECT COALESCE(SUM(amount), 0) as total FROM payments "
+            "WHERE status = 'approved' AND reseller_plan_id IS NOT NULL"
+        )
+
+        deposit_count_row = await self._fetchone(
+            "SELECT COUNT(*) as c FROM payments WHERE status = 'approved'"
+        )
+
+        return {
+            "revenue_today": today,
+            "revenue_week": week,
+            "revenue_month": month,
+            "revenue_all_time": all_time,
+            "top_products": top_products,
+            "reseller_revenue_all_time": reseller_revenue_row["total"] if reseller_revenue_row else 0,
+            "approved_payments_count": deposit_count_row["c"] if deposit_count_row else 0,
+        }
+
+    # --- CSV/report export helpers ---
+    async def get_all_users_for_export(self) -> list[dict]:
+        return await self._fetchall("SELECT * FROM users ORDER BY id ASC")
+
+    async def get_all_payments_for_export(self) -> list[dict]:
+        return await self._fetchall(
+            "SELECT py.*, u.telegram_id, u.username FROM payments py "
+            "JOIN users u ON py.user_id = u.id ORDER BY py.id ASC"
         )
 
 

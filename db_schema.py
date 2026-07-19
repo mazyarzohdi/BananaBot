@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS users (
     phone TEXT,
     balance INTEGER DEFAULT 0,
     is_banned INTEGER DEFAULT 0,
+    referred_by INTEGER DEFAULT NULL,
+    admin_note TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -80,6 +82,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     sub_link TEXT,
     status TEXT DEFAULT 'active',
     is_trial INTEGER DEFAULT 0,
+    auto_renew INTEGER NOT NULL DEFAULT 0,
+    reminder_sent_at TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (product_id) REFERENCES products(id),
@@ -169,6 +173,7 @@ CREATE TABLE IF NOT EXISTS resellers (
     quota_gb REAL NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
+    reminder_sent_at TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (plan_id) REFERENCES reseller_plans(id),
@@ -205,6 +210,36 @@ CREATE TABLE IF NOT EXISTS tutorials (
     content TEXT NOT NULL,
     sort_order INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS support_ticket_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    sender TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (ticket_id) REFERENCES support_tickets(id)
+);
+
+CREATE TABLE IF NOT EXISTS referral_earnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrer_user_id INTEGER NOT NULL,
+    referred_user_id INTEGER NOT NULL UNIQUE,
+    amount INTEGER NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (referrer_user_id) REFERENCES users(id),
+    FOREIGN KEY (referred_user_id) REFERENCES users(id)
+);
 """
 
 
@@ -212,6 +247,7 @@ DEFAULT_SETTINGS = {
     "welcome_text": "سلام! به ربات فروش VPN خوش آمدید.",
     "support_text": "برای پشتیبانی با ادمین تماس بگیرید.",
     "support_username": "",
+    "support_contact_enabled": "1",
     "trial_enabled": "1",
     "trial_product_id": "0",
     "trial_panel_id": "",
@@ -223,6 +259,14 @@ DEFAULT_SETTINGS = {
     "auto_payment_enabled": "0",
     "auto_payment_secret": "",
     "auto_payment_port": "8100",
+    "expiry_reminder_enabled": "1",
+    "expiry_reminder_days_before": "3",
+    "referral_enabled": "0",
+    "referral_reward_amount": "0",
+    "backup_schedule_enabled": "0",
+    "backup_schedule_interval_hours": "24",
+    "backup_schedule_retention_count": "14",
+    "backup_last_run_at": "0",
 }
 
 # Historical migrations that predate the generic column-reconciler below, or

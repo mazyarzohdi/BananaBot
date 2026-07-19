@@ -33,7 +33,7 @@ def verify_telegram_auth(data: dict) -> bool:
     secret_key = hashlib.sha256(token.encode()).digest()
     computed = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
 
-    if computed != check_hash:
+    if not hmac.compare_digest(computed, check_hash):
         return False
 
     # Auth must not be older than 24 hours

@@ -31,6 +31,9 @@ from bot.keyboards import (
     reseller_status_inline,
     service_actions_inline,
     services_inline,
+    support_menu_inline,
+    ticket_detail_inline,
+    ticket_list_inline,
     tutorials_inline,
 )
 from bot.messages import t
@@ -225,6 +228,14 @@ async def cmd_start(
     if args == "deposit":
         await _start_deposit_flow(message.answer, state)
         return
+
+    # Deep link from a referral share link: https://t.me/<bot>?start=ref_<telegram_id>
+    if args.startswith("ref_"):
+        raw_ref = args[len("ref_"):]
+        if raw_ref.isdigit() and int(raw_ref) != message.from_user.id:
+            referrer = await db.get_user_by_telegram_id(int(raw_ref))
+            if referrer:
+                await db.set_user_referred_by(db_user["id"], referrer["id"])
 
     welcome = await db.get_setting("welcome_text", t("welcome"))
     await message.answer(welcome, reply_markup=main_menu(is_admin))
@@ -732,10 +743,63 @@ async def service_detail(callback: CallbackQuery, db_user: dict):
         text,
         parse_mode="Markdown",
         reply_markup=service_actions_inline(
-            sub_id, renewable=not sub.get("is_trial") and bool(sub.get("product_id"))
+            sub_id,
+            renewable=not sub.get("is_trial") and bool(sub.get("product_id")),
+            auto_renew=bool(sub.get("auto_renew")),
         ),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("svc_autorenew:"))
+async def toggle_auto_renew(callback: CallbackQuery, db_user: dict):
+    sub_id = int(callback.data.split(":")[1])
+    db = get_db()
+    sub = await db.get_subscription(sub_id)
+    if not sub or sub["user_id"] != db_user["id"]:
+        await callback.answer("سرویس پیدا نشد", show_alert=True)
+        return
+    if sub.get("is_trial") or not sub.get("product_id"):
+        await callback.answer("❌ تمدید خودکار برای این سرویس در دسترس نیست.", show_alert=True)
+        return
+
+    new_state = not bool(sub.get("auto_renew"))
+    await db.set_subscription_auto_renew(sub_id, new_state)
+    sub = await db.get_subscription(sub_id)
+
+    try:
+        usage = await sub_service.get_usage(sub_id)
+        used = usage["used_gb"]
+        expiry = format_expiry(usage["expiry_time"])
+    except Exception:
+        used = "—"
+        expiry = format_expiry(sub.get("expiry_time", 0))
+
+    text = t(
+        "service_detail",
+        id=sub["id"],
+        email=sub["email"],
+        volume=sub["volume_gb"],
+        used=used,
+        expiry=expiry,
+        panel=sub.get("panel_name", ""),
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=service_actions_inline(
+            sub_id,
+            renewable=not sub.get("is_trial") and bool(sub.get("product_id")),
+            auto_renew=new_state,
+        ),
+    )
+    if new_state:
+        await callback.answer(
+            "🟢 تمدید خودکار روشن شد. اگر موجودی کیف پولتان کافی باشد، سرویس در زمان انقضا خودکار تمدید می‌شود.",
+            show_alert=True,
+        )
+    else:
+        await callback.answer("⚪️ تمدید خودکار خاموش شد.")
 
 
 @router.callback_query(F.data.startswith("getconfig:"))
@@ -1247,11 +1311,179 @@ async def reseller_card_topup_start(callback: CallbackQuery, db_user: dict):
 @router.message(F.text == t("support"))
 async def support(message: Message):
     db = get_db()
-    text = await db.get_setting("support_text", t("support"))
-    username = await db.get_setting("support_username", "")
-    if username:
-        text += f"\n\n@{username}"
-    await message.answer(text)
+    contact_enabled = await db.get_setting("support_contact_enabled", "1") == "1"
+    text = ""
+    if contact_enabled:
+        text = await db.get_setting("support_text", t("support"))
+        username = await db.get_setting("support_username", "")
+        if username:
+            text += f"\n\n@{username}"
+        text += "\n\n"
+    text += "برای پیگیری اختصاصی می‌توانید یک تیکت پشتیبانی ثبت کنید 👇"
+    await message.answer(text, reply_markup=support_menu_inline(contact_enabled))
+
+
+class TicketForm(StatesGroup):
+    subject = State()
+    message = State()
+    reply = State()
+
+
+@router.callback_query(F.data == "ticket_new")
+async def ticket_new_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(TicketForm.subject)
+    await callback.message.answer(
+        "🎫 موضوع تیکت را در یک خط کوتاه بنویسید (مثلاً «مشکل اتصال به سرویس»):",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(TicketForm.subject)
+async def ticket_new_subject(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=main_menu())
+        return
+    await state.update_data(subject=(message.text or "").strip()[:100])
+    await state.set_state(TicketForm.message)
+    await message.answer("✍️ حالا توضیح کامل مشکل یا درخواستتان را بنویسید:", reply_markup=cancel_kb())
+
+
+@router.message(TicketForm.message)
+async def ticket_new_message(message: Message, state: FSMContext, db_user: dict, is_admin: bool):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=main_menu(is_admin))
+        return
+    data = await state.get_data()
+    db = get_db()
+    ticket_id = await db.create_ticket(db_user["id"], data.get("subject", ""), (message.text or "").strip())
+    await state.clear()
+    await message.answer(
+        f"✅ تیکت شما با شماره #{ticket_id} ثبت شد. به‌محض پاسخ پشتیبانی، پیام دریافت خواهید کرد.",
+        reply_markup=main_menu(is_admin),
+    )
+    for admin_id in get_settings().admin_ids:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"🎫 تیکت جدید #{ticket_id}\n"
+                f"👤 {db_user.get('full_name') or ''} (@{db_user.get('username') or '-'}) — {db_user['telegram_id']}\n"
+                f"📝 موضوع: {data.get('subject', '')}\n\n{message.text}",
+            )
+        except Exception:
+            pass
+
+
+async def _ticket_detail_text(db, ticket: dict) -> str:
+    msgs = await db.get_ticket_messages(ticket["id"])
+    status_fa = {"open": "🟢 باز", "answered": "🔵 پاسخ داده‌شده", "closed": "⚪️ بسته‌شده"}
+    lines = [
+        f"🎫 تیکت #{ticket['id']} — {status_fa.get(ticket['status'], ticket['status'])}",
+        f"📝 موضوع: {ticket.get('subject') or '—'}\n",
+    ]
+    for m in msgs:
+        who = "👤 شما" if m["sender"] == "user" else "🛠 پشتیبانی"
+        lines.append(f"{who}:\n{m['text']}\n")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("ticket_list:"))
+async def ticket_list(callback: CallbackQuery, db_user: dict):
+    db = get_db()
+    tickets = await db.get_user_tickets(db_user["id"])
+    if not tickets:
+        await callback.message.edit_text(
+            "📭 هنوز تیکتی ثبت نکرده‌اید.\n\nبرای ثبت تیکت جدید:",
+            reply_markup=support_menu_inline(True),
+        )
+        await callback.answer()
+        return
+    await callback.message.edit_text("📋 تیکت‌های شما:", reply_markup=ticket_list_inline(tickets))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ticket_view:"))
+async def ticket_view(callback: CallbackQuery, db_user: dict):
+    ticket_id = int(callback.data.split(":")[1])
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket or ticket["user_id"] != db_user["id"]:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    text = await _ticket_detail_text(db, ticket)
+    await callback.message.edit_text(text, reply_markup=ticket_detail_inline(ticket_id, ticket["status"]))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ticket_reply:"))
+async def ticket_reply_start(callback: CallbackQuery, state: FSMContext, db_user: dict):
+    ticket_id = int(callback.data.split(":")[1])
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket or ticket["user_id"] != db_user["id"]:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    if ticket["status"] == "closed":
+        await callback.answer("این تیکت بسته شده است. لطفاً تیکت جدید ثبت کنید.", show_alert=True)
+        return
+    await state.update_data(ticket_id=ticket_id)
+    await state.set_state(TicketForm.reply)
+    await callback.message.answer("✍️ پاسخ خود را بنویسید:", reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.message(TicketForm.reply)
+async def ticket_reply_save(message: Message, state: FSMContext, db_user: dict, is_admin: bool):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=main_menu(is_admin))
+        return
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    db = get_db()
+    ticket = await db.get_ticket(ticket_id) if ticket_id else None
+    if not ticket or ticket["user_id"] != db_user["id"]:
+        await state.clear()
+        await message.answer("این تیکت دیگر در دسترس نیست.", reply_markup=main_menu(is_admin))
+        return
+    await db.add_ticket_message(ticket_id, "user", (message.text or "").strip())
+    if ticket["status"] == "closed":
+        await db.set_ticket_status(ticket_id, "open")
+    await state.clear()
+    await message.answer(f"✅ پاسخ شما به تیکت #{ticket_id} ارسال شد.", reply_markup=main_menu(is_admin))
+    for admin_id in get_settings().admin_ids:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"🎫 پاسخ جدید روی تیکت #{ticket_id} از طرف کاربر:\n\n{message.text}",
+            )
+        except Exception:
+            pass
+
+
+# --- Referral ---
+
+@router.message(F.text == t("referral"))
+async def referral_menu(message: Message, db_user: dict):
+    db = get_db()
+    if await db.get_setting("referral_enabled", "0") != "1":
+        await message.answer("سیستم معرفی در حال حاضر غیرفعال است.")
+        return
+    me = await message.bot.get_me()
+    link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
+    stats = await db.get_referral_stats(db_user["id"])
+    reward = await db.get_setting("referral_reward_amount", "0")
+    text = (
+        "🤝 دعوت از دوستان\n\n"
+        f"با اشتراک‌گذاری لینک زیر، به ازای اولین شارژ موفق هر کسی که با این لینک وارد ربات شود، "
+        f"{int(reward or 0):,} تومان به کیف پول شما اضافه می‌شود:\n\n"
+        f"`{link}`\n\n"
+        f"👥 تعداد افراد معرفی‌شده: {stats['referred_count']}\n"
+        f"💰 مجموع پاداش دریافتی: {stats['total_earned']:,} تومان"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
 
 @router.message(F.text == t("faq"))

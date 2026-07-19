@@ -31,6 +31,25 @@ class XUIClient:
             "Authorization": f"Bearer {self.api_token}",
         }
 
+    async def get_db_backup(self) -> bytes:
+        """دانلود فایل خام بکاپ دیتابیس خودِ پنل X-UI (فایل sqlite کامل
+        پنل، شامل inboundها/clientها/تنظیمات). این یک endpoint استاندارد
+        در 3x-ui/x-ui است که (برخلاف بقیه‌ی endpointها) به‌جای JSON، فایل
+        باینری برمی‌گردونه — پس نمی‌تونه از _request عادی استفاده کنه.
+        ممکنه بسته به نسخه‌ی پنل در دسترس نباشه؛ صدازننده باید حتماً
+        try/except بذاره و شکست این متد رو fatal در نظر نگیره."""
+        url = f"{self.base_url}/panel/api/server/getDb"
+        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with session.get(url, headers=self._headers()) as resp:
+                if resp.status >= 400:
+                    raise XUIError(f"HTTP {resp.status}", resp.status)
+                content = await resp.read()
+                if not content or content[:1] == b"{":
+                    # got JSON back (likely an error/auth-failure payload),
+                    # not the sqlite file — treat as unavailable.
+                    raise XUIError("پنل فایل باینری برنگرداند (احتمالاً این endpoint در این نسخه در دسترس نیست)")
+                return content
+
     async def _request(
         self,
         method: str,

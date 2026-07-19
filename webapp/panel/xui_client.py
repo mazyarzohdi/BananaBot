@@ -3,11 +3,14 @@ web panel process.
 
 The bot already has a full async client (services/xui_client.py, built on
 aiohttp) — but that process is a separate aiogram polling loop, and the
-panel's venv doesn't include aiohttp. Since the panel only ever needs to
-delete a client (when an admin removes a user's active service from the
-web UI), this only implements that one endpoint, using the same request
-shape as the bot's client so both stay compatible with the same 3x-ui
-panel installs.
+panel's venv doesn't include aiohttp. This module is the panel's own
+lightweight equivalent, covering the full client lifecycle the panel
+needs directly against the 3x-ui REST API: add_client, get_client,
+update_client, reset_client_traffic, get_client_links, get_client_traffic,
+and delete_client, plus small helpers (compute_expiry_ms,
+generate_client_email, generate_sub_id) shared with the bot's own
+generation logic so both stay compatible with the same 3x-ui panel
+installs.
 """
 
 import json

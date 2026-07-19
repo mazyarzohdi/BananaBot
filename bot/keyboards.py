@@ -32,7 +32,7 @@ def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("trial")), KeyboardButton(text=t("balance"))],
         [KeyboardButton(text=t("deposit")), KeyboardButton(text=t("support"))],
         [KeyboardButton(text=t("faq")), KeyboardButton(text=t("tutorials"))],
-        [KeyboardButton(text=t("reseller_panel"))],
+        [KeyboardButton(text=t("reseller_panel")), KeyboardButton(text=t("referral"))],
     ]
     panel_btn = _panel_button()
     if panel_btn:
@@ -49,7 +49,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("admin_payments")), KeyboardButton(text=t("admin_settings"))],
         [KeyboardButton(text=t("admin_faq")), KeyboardButton(text=t("admin_tutorials"))],
         [KeyboardButton(text=t("admin_coupons")), KeyboardButton(text=t("admin_broadcast"))],
-        [KeyboardButton(text=t("admin_reseller"))],
+        [KeyboardButton(text=t("admin_reseller")), KeyboardButton(text=t("admin_tickets"))],
         [KeyboardButton(text=t("back"))],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -192,7 +192,9 @@ def services_inline(services: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def service_actions_inline(sub_id: int, show_back: bool = True, renewable: bool = True) -> InlineKeyboardMarkup:
+def service_actions_inline(
+    sub_id: int, show_back: bool = True, renewable: bool = True, auto_renew: bool = False,
+) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="🔧 دریافت کانفیگ", callback_data=f"getconfig:{sub_id}"),
@@ -205,6 +207,8 @@ def service_actions_inline(sub_id: int, show_back: bool = True, renewable: bool 
     ]
     if renewable:
         rows.append([InlineKeyboardButton(text="🔁 تمدید سرویس", callback_data=f"svc_renew:{sub_id}")])
+        auto_renew_label = "🟢 تمدید خودکار: روشن" if auto_renew else "⚪️ تمدید خودکار: خاموش"
+        rows.append([InlineKeyboardButton(text=auto_renew_label, callback_data=f"svc_autorenew:{sub_id}")])
     if show_back:
         rows.append([InlineKeyboardButton(text=t("back"), callback_data="back_services")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -446,7 +450,7 @@ def user_admin_card_inline(tid: int, banned: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="➕ افزایش موجودی", callback_data=f"uadm_addbal:{tid}"),
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
-            [ban_btn],
+            [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
         ]
     )
@@ -688,8 +692,77 @@ def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1)
                 InlineKeyboardButton(text="➕ افزایش موجودی", callback_data=f"uadm_addbal:{tid}"),
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
-            [ban_btn],
+            [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
             [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"ulist_page:{back_page}:")],
         ]
     )
+
+
+# --- Support: contact vs. ticket entry point ---
+
+def support_menu_inline(contact_enabled: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=t("new_ticket"), callback_data="ticket_new")],
+        [InlineKeyboardButton(text=t("my_tickets"), callback_data="ticket_list:1")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --- Support tickets: user side ---
+
+def ticket_list_inline(tickets: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    status_icon = {"open": "🟢", "answered": "🔵", "closed": "⚪️"}
+    for tk in tickets:
+        icon = status_icon.get(tk["status"], "🟢")
+        subject = (tk.get("subject") or "بدون موضوع")[:30]
+        rows.append([
+            InlineKeyboardButton(text=f"{icon} #{tk['id']} — {subject}", callback_data=f"ticket_view:{tk['id']}")
+        ])
+    rows.append([InlineKeyboardButton(text=t("new_ticket"), callback_data="ticket_new")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ticket_detail_inline(ticket_id: int, status: str) -> InlineKeyboardMarkup:
+    rows = []
+    if status != "closed":
+        rows.append([InlineKeyboardButton(text="✍️ ارسال پاسخ", callback_data=f"ticket_reply:{ticket_id}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به لیست تیکت‌ها", callback_data="ticket_list:1")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --- Support tickets: admin side ---
+
+def admin_stats_export_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📤 خروجی کاربران (CSV)", callback_data="export_users"),
+                InlineKeyboardButton(text="📤 خروجی پرداخت‌ها (CSV)", callback_data="export_payments"),
+            ],
+        ]
+    )
+
+
+def admin_ticket_list_inline(tickets: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    status_icon = {"open": "🟢", "answered": "🔵"}
+    for tk in tickets:
+        icon = status_icon.get(tk["status"], "🟢")
+        who = f"@{tk['username']}" if tk.get("username") else (tk.get("full_name") or tk["telegram_id"])
+        subject = (tk.get("subject") or "بدون موضوع")[:25]
+        rows.append([
+            InlineKeyboardButton(text=f"{icon} #{tk['id']} — {who} — {subject}", callback_data=f"aticket_view:{tk['id']}")
+        ])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="(تیکت باز/پاسخ‌داده‌نشده‌ای نیست)", callback_data="noop")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_ticket_detail_inline(ticket_id: int, status: str) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="✍️ ارسال پاسخ", callback_data=f"aticket_reply:{ticket_id}")]]
+    if status != "closed":
+        rows.append([InlineKeyboardButton(text="🔒 بستن تیکت", callback_data=f"aticket_close:{ticket_id}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به لیست تیکت‌ها", callback_data="aticket_list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
