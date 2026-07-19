@@ -131,6 +131,7 @@ main_menu() {
     echo ""
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "   [11] 🔄 Update Bot from GitHub"
+    echo "   [23] 🔧 Update THIS Management Menu (manage.sh) from GitHub"
     echo "   [12] 🗑️  Completely Remove Bot"
     echo ""
     echo -e "  ${BOLD}━━━ Database ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -148,6 +149,7 @@ main_menu() {
     echo -e "  ${BOLD}━━━ Auto-Payment Webhook (Bank SMS) ━━━━━━━━━━━${NC}"
     echo "   [21] ℹ️  Webhook Status & Info"
     echo "   [22] ↺  Restart Webhook Service"
+    echo "   [24] ■  Stop Webhook Service"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -404,6 +406,26 @@ action_webhook_restart() {
     fi
 }
 
+action_webhook_stop() {
+    echo ""
+    if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
+        warn "Webhook service is not set up yet."
+        return
+    fi
+    if ! systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        warn "Webhook service is already stopped."
+        return
+    fi
+    log "Stopping webhook service..."
+    systemctl stop "$WEBHOOK_SERVICE"
+    if ! systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        success "Webhook service stopped."
+        warn "Auto-payment (bank SMS) approval will NOT work while this is stopped — deposits will need manual admin approval instead. Use option [22] to start it again."
+    else
+        error "Webhook service failed to stop. Check: journalctl -u $WEBHOOK_SERVICE -n 30"
+    fi
+}
+
 # ------------------------------------------------------------
 action_update() {
     echo ""
@@ -413,6 +435,58 @@ action_update() {
     if [[ ! "$CONFIRM" =~ ^[yY]$ ]]; then
         return
     fi
+
+    # --- Stop everything that touches bot.db BEFORE changing anything ---
+    # The update pulls new code (git reset --hard) and reconcile() runs
+    # ALTER TABLE / CREATE TABLE against the live database. If the bot,
+    # web panel, or auto-payment webhook server are still running while
+    # that happens, they're issuing concurrent reads/writes against the
+    # exact same WAL-mode file while its structure is being rebuilt out
+    # from under them — a well-known way to corrupt SQLite. All three
+    # get stopped first and restarted at the end, exactly like restore.
+    local bot_was_running=0 web_was_running=0 webhook_was_running=0
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        bot_was_running=1
+        log "Stopping bot..."
+        systemctl stop "$SERVICE_NAME"
+    fi
+    if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
+        web_was_running=1
+        log "Stopping web panel..."
+        systemctl stop "$WEBAPP_SERVICE"
+    fi
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
+        webhook_was_running=1
+        log "Stopping auto-payment webhook service..."
+        systemctl stop "$WEBHOOK_SERVICE"
+    fi
+
+    # --- Safety backup, taken with everything stopped (quiescent DB) ---
+    if [[ -f "$DB_PATH" ]]; then
+        local safety_ts safety_dest
+        safety_ts=$(date +%Y%m%d_%H%M%S)
+        safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-update.db"
+        mkdir -p "$BACKUP_DIR"
+        if _sqlite_backup_file "$DB_PATH" "$safety_dest"; then
+            success "Safety copy of the current database saved to: $safety_dest"
+        else
+            warn "Could not take a safety copy of the database before updating — continuing anyway."
+        fi
+
+        pre_integrity=$("$INSTALL_DIR/.venv/bin/python" -c "
+import sqlite3
+con = sqlite3.connect('$DB_PATH')
+try:
+    print(con.execute('PRAGMA integrity_check').fetchone()[0])
+finally:
+    con.close()
+" 2>&1) || pre_integrity="check failed to run: $pre_integrity"
+        if [[ "$pre_integrity" != "ok" ]]; then
+            warn "Database integrity check BEFORE update reports: $pre_integrity"
+            warn "This pre-dates the update — worth investigating regardless."
+        fi
+    fi
+
     log "Fetching latest version from GitHub..."
     # پشتیبان از .env
     cp "$ENV_FILE" "/tmp/.env.bananabot.bak"
@@ -426,22 +500,30 @@ action_update() {
     log "Checking/repairing database schema..."
     "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
 
+    if [[ -f "$DB_PATH" ]]; then
+        post_integrity=$("$INSTALL_DIR/.venv/bin/python" -c "
+import sqlite3
+con = sqlite3.connect('$DB_PATH')
+try:
+    print(con.execute('PRAGMA integrity_check').fetchone()[0])
+finally:
+    con.close()
+" 2>&1) || post_integrity="check failed to run: $post_integrity"
+        if [[ "$post_integrity" == "ok" ]]; then
+            success "Database integrity check after update: ok."
+        else
+            error "Database integrity check AFTER update reports: $post_integrity"
+            error "If this looks wrong, restore the safety copy taken above:"
+            error "  cp \"${safety_dest:-<safety file>}\" \"$DB_PATH\""
+        fi
+    fi
+
     # A code update can bring new webapp dependencies, new Django-level
     # schema (auth/session tables db_schema.py doesn't own), or new static
     # assets. Skipped entirely if the web panel was never set up.
     if [[ -f "$WEBAPP_ENV" ]]; then
         load_webapp_lib
         webapp_sync_after_code_update
-        if systemctl is-active --quiet "$WEBAPP_SERVICE" 2>/dev/null; then
-            log "Restarting web panel so it picks up the update..."
-            systemctl restart "$WEBAPP_SERVICE"
-            sleep 1
-            if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
-                success "Web panel restarted."
-            else
-                error "Web panel failed to restart after update. Check: journalctl -u $WEBAPP_SERVICE -n 50"
-            fi
-        fi
     fi
 
     if [[ ! -f "/etc/systemd/system/${WEBHOOK_SERVICE}.service" ]]; then
@@ -468,24 +550,85 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable "$WEBHOOK_SERVICE"
-        systemctl start "$WEBHOOK_SERVICE"
+        systemctl enable "$WEBHOOK_SERVICE" >> /dev/null 2>&1
+        webhook_was_running=1  # brand new service — start it below along with everything else
         success "Auto-payment webhook service created (see menu option 21 for status, and AUTO_PAYMENT_SETUP.md to configure)."
     fi
 
     success "Update completed."
-    echo -n "  Restart the bot? [y/N]: "
-    read -r RESTART_CHOICE
-    if [[ "$RESTART_CHOICE" =~ ^[yY]$ ]]; then
-        action_restart
-    fi
-    if systemctl list-unit-files "${WEBHOOK_SERVICE}.service" >/dev/null 2>&1; then
-        echo -n "  Restart the auto-payment webhook service too? [y/N]: "
-        read -r WEBHOOK_RESTART_CHOICE
-        if [[ "$WEBHOOK_RESTART_CHOICE" =~ ^[yY]$ ]]; then
-            action_webhook_restart
+
+    # --- Restart whatever was running before, automatically ---
+    if [[ "$bot_was_running" -eq 1 ]]; then
+        log "Starting bot..."
+        systemctl start "$SERVICE_NAME"
+        sleep 1
+        if systemctl is-active --quiet "$SERVICE_NAME"; then
+            success "Bot started."
+        else
+            error "Bot failed to start after update. Check: journalctl -u $SERVICE_NAME -n 50"
         fi
     fi
+    if [[ "$web_was_running" -eq 1 ]]; then
+        log "Starting web panel..."
+        systemctl start "$WEBAPP_SERVICE"
+        sleep 1
+        if systemctl is-active --quiet "$WEBAPP_SERVICE"; then
+            success "Web panel started."
+        else
+            error "Web panel failed to start after update. Check: journalctl -u $WEBAPP_SERVICE -n 50"
+        fi
+    fi
+    if [[ "$webhook_was_running" -eq 1 ]]; then
+        log "Starting auto-payment webhook service..."
+        systemctl start "$WEBHOOK_SERVICE"
+        sleep 1
+        if systemctl is-active --quiet "$WEBHOOK_SERVICE"; then
+            success "Auto-payment webhook service started."
+        else
+            error "Webhook service failed to start after update. Check: journalctl -u $WEBHOOK_SERVICE -n 50"
+        fi
+    fi
+
+    # The git reset --hard above already wrote a fresh manage.sh to disk,
+    # but THIS running process is still executing the old in-memory copy
+    # (bash doesn't hot-reload a script mid-run) — so any new menu options
+    # or fixes wouldn't show up until the admin manually exits and re-runs
+    # it. `exec` replaces this process with a fresh run of the just-updated
+    # script, so the very next menu screen is already up to date.
+    echo ""
+    log "Reloading the management menu with the freshly-updated script..."
+    sleep 1
+    exec bash "$INSTALL_DIR/manage.sh"
+}
+
+# ------------------------------------------------------------
+action_update_manage_script() {
+    echo ""
+    echo -e "  ${BOLD}This updates ONLY manage.sh (and lib/) from GitHub —${NC}"
+    echo -e "  ${BOLD}the bot's code, database, and running services are not touched.${NC}"
+    echo -n "  Continue? [y/N]: "
+    read -r CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[yY]$ ]]; then
+        return
+    fi
+
+    log "Fetching the latest management menu from GitHub..."
+    if ! git -C "$INSTALL_DIR" fetch origin >> /dev/null 2>&1; then
+        error "git fetch failed — check the server's internet connection and try again."
+        return
+    fi
+    if ! git -C "$INSTALL_DIR" checkout origin/main -- manage.sh lib/ >> /dev/null 2>&1; then
+        error "Could not check out the latest manage.sh/lib from origin/main."
+        error "Your local manage.sh was NOT modified."
+        return
+    fi
+    chmod +x "$INSTALL_DIR/manage.sh"
+    success "manage.sh and lib/ updated to the latest version from GitHub."
+
+    echo ""
+    log "Reloading the management menu..."
+    sleep 1
+    exec bash "$INSTALL_DIR/manage.sh"
 }
 
 # ------------------------------------------------------------
@@ -896,6 +1039,7 @@ run() {
             9)  action_change_channel ;;
             10) action_show_config ;;
             11) action_update ;;
+            23) action_update_manage_script ;;
             12) action_uninstall ;;
             18) action_backup_db ;;
             19) action_restore_db ;;
@@ -907,6 +1051,7 @@ run() {
             17) action_webapp_configure ;;
             21) action_webhook_info ;;
             22) action_webhook_restart ;;
+            24) action_webhook_stop ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
