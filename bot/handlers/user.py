@@ -256,13 +256,13 @@ async def cmd_start(
         await _start_deposit_flow(message.answer, state)
         return
 
-    # Deep link from a referral share link: https://t.me/<bot>?start=ref_<telegram_id>
+    # Deep link from a referral share link: https://t.me/<bot>?start=ref_<referral_code>
+    # (کد کوتاه و تصادفی — نه آیدی عددی تلگرام، تا لینک قابل‌حدس/شمارش نباشه)
     if args.startswith("ref_"):
         raw_ref = args[len("ref_"):]
-        if raw_ref.isdigit() and int(raw_ref) != message.from_user.id:
-            referrer = await db.get_user_by_telegram_id(int(raw_ref))
-            if referrer:
-                await db.set_user_referred_by(db_user["id"], referrer["id"])
+        referrer = await db.get_user_by_referral_code(raw_ref)
+        if referrer and referrer["id"] != db_user["id"]:
+            await db.set_user_referred_by(db_user["id"], referrer["id"])
 
     welcome = await db.get_setting("welcome_text", t("welcome"))
     await message.answer(welcome, reply_markup=main_menu(is_admin))
@@ -1510,7 +1510,8 @@ async def referral_menu(message: Message, db_user: dict):
         await message.answer("سیستم معرفی در حال حاضر غیرفعال است.")
         return
     me = await message.bot.get_me()
-    link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
+    ref_code = await db.get_or_create_referral_code(db_user["id"])
+    link = f"https://t.me/{me.username}?start=ref_{ref_code}"
     stats = await db.get_referral_stats(db_user["id"])
     reward_type = await db.get_setting("referral_reward_type", "percent")
     reward_value_raw = await db.get_setting("referral_reward_value", "0")

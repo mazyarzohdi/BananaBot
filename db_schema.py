@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS users (
     balance INTEGER DEFAULT 0,
     is_banned INTEGER DEFAULT 0,
     referred_by INTEGER DEFAULT NULL,
+    referral_code TEXT DEFAULT NULL,
     admin_note TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -442,6 +443,18 @@ def reconcile(db_path: str) -> dict:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass  # column already exists
+
+        # این ایندکس عمداً اینجا (بعد از حلقه‌ی ADD COLUMN بالا) اجرا می‌شه،
+        # نه به‌صورت inline توی SCHEMA — چون روی دیتابیس‌های قدیمی که ستون
+        # referral_code هنوز وجود نداره، اگه زودتر اجرا بشه (قبل از اضافه
+        # شدن ستون) با خطا مواجه می‌شه.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code "
+                "ON users(referral_code) WHERE referral_code IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         for key, value in DEFAULT_SETTINGS.items():
             cur = conn.execute(

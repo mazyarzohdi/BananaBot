@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import secrets
 import time
 
 import aiosqlite
@@ -136,6 +137,38 @@ class Database:
             "referred_count": count_row["c"] if count_row else 0,
             "total_earned": earned_row["total"] if earned_row else 0,
         }
+
+    # حروف/ارقامی که با هم اشتباه گرفته می‌شن (0/O، 1/I/l) عمداً حذف شدن تا
+    # کد وقتی با دست تایپ یا از روی عکس/چاپ خونده می‌شه کمتر اشتباه بشه.
+    _REFERRAL_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    _REFERRAL_CODE_LENGTH = 8  # نه خیلی کوتاه (قابل حدس)، نه خیلی بلند (زشت/سخت برای اشتراک‌گذاری)
+
+    async def get_or_create_referral_code(self, user_id: int) -> str:
+        """بجای افشای آیدی عددی تلگرام کاربر توی لینک دعوت (که هم به لحاظ
+        امنیتی/حریم خصوصی مناسب نیست، هم قابل حدس‌زدن/شمارش‌پذیره)، هر
+        کاربر یک کد کوتاه و تصادفی و غیرقابل‌حدس داره که فقط داخل ربات
+        قابل نگاشت به کاربرشه. اگه قبلاً ساخته نشده، همین‌جا یکی یکتا
+        می‌سازه، ذخیره می‌کنه و برمی‌گردونه؛ در غیر این صورت همون کد قبلی
+        رو برمی‌گردونه (کد هیچ‌وقت عوض نمی‌شه)."""
+        row = await self._fetchone("SELECT referral_code FROM users WHERE id = ?", (user_id,))
+        if row and row.get("referral_code"):
+            return row["referral_code"]
+        for _ in range(20):
+            code = "".join(
+                secrets.choice(self._REFERRAL_CODE_ALPHABET) for _ in range(self._REFERRAL_CODE_LENGTH)
+            )
+            try:
+                await self._execute("UPDATE users SET referral_code = ? WHERE id = ?", (code, user_id))
+                return code
+            except Exception:
+                continue  # برخورد تصادفی (خیلی بعیده) — یک کد دیگه امتحان کن
+        raise RuntimeError("Could not generate a unique referral code")
+
+    async def get_user_by_referral_code(self, code: str) -> dict | None:
+        code = (code or "").strip()
+        if not code:
+            return None
+        return await self._fetchone("SELECT * FROM users WHERE referral_code = ?", (code,))
 
     async def calc_referral_reward(self, purchase_amount: int) -> int:
         """مبلغ پاداش رفرال رو بر اساس نوع تنظیم‌شده توسط ادمین (درصدی از
