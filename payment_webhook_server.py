@@ -163,56 +163,6 @@ def send_telegram_message(chat_id: int, text: str, reply_markup: dict | None = N
         logger.exception("Failed to notify user %s", chat_id)
 
 
-def maybe_reward_referral(referred_user_id: int) -> dict | None:
-    """نسخه‌ی sync همون منطق database/db.py برای این پروسه‌ی مستقل. فقط
-    روی اولین پرداخت تاییدشده‌ی کاربر معرفی‌شده پاداش می‌ده، دقیقاً یک
-    بار (constraint یکتای referred_user_id تضمینش می‌کنه، حتی اگه این
-    تابع همزمان از دو جا صدا زده بشه)."""
-    if get_setting("referral_enabled", "0") != "1":
-        return None
-    try:
-        reward = int(get_setting("referral_reward_amount", "0") or "0")
-    except ValueError:
-        reward = 0
-    if reward <= 0:
-        return None
-
-    with get_conn() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (referred_user_id,)).fetchone()
-        if not user or not user["referred_by"]:
-            return None
-
-        approved_count = conn.execute(
-            "SELECT COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
-            (referred_user_id,),
-        ).fetchone()
-        if not approved_count or approved_count["c"] != 1:
-            return None
-
-        referrer = conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user["referred_by"],)
-        ).fetchone()
-        if not referrer:
-            return None
-
-        try:
-            conn.execute(
-                "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, amount, source) "
-                "VALUES (?, ?, ?, 'first_deposit')",
-                (referrer["id"], referred_user_id, reward),
-            )
-        except sqlite3.IntegrityError:
-            return None  # already rewarded (UNIQUE(referred_user_id))
-
-        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (reward, referrer["id"]))
-        conn.commit()
-        return {
-            "referrer_telegram_id": referrer["telegram_id"],
-            "reward": reward,
-            "referred_name": user["full_name"] or user["username"] or str(user["telegram_id"]),
-        }
-
-
 def notify_payment_approved(payment: dict):
     telegram_id = payment.get("telegram_id")
     if not telegram_id:
@@ -371,13 +321,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         notify_payment_approved(payment)
-        referral = maybe_reward_referral(payment["user_id"])
-        if referral:
-            send_telegram_message(
-                referral["referrer_telegram_id"],
-                f"🤝 پاداش معرفی: {referral['reward']:,} تومان بابت اولین شارژ «{referral['referred_name']}» "
-                "به کیف پول شما اضافه شد!",
-            )
         logger.info("Auto-approved payment #%s for %s rial.", payment["id"], amount_rial)
         self._json_response(200, {
             "ok": True, "matched": True,

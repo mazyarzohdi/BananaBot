@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards import (
+    admin_ticket_notify_inline,
     auto_payment_copy_inline,
     balance_inline,
     cancel_kb,
@@ -45,6 +46,32 @@ from utils.helpers import format_expiry, load_config_links, parse_positive_int
 logger = logging.getLogger(__name__)
 router = Router()
 sub_service = SubscriptionService()
+
+
+async def _reward_referral_and_notify(bot, db, buyer_user_id: int, purchase_amount: int, order_id: int | None, source: str):
+    """بعد از هر خرید موفق (خرید جدید، تمدید سرویس، یا خرید/تمدید نمایندگی)
+    صدا زده می‌شه. اگه خریدار با لینک معرفی وارد ربات شده باشه و سیستم
+    رفرال فعال باشه، درصد/مبلغ پاداشی که ادمین از پنل تنظیمات مشخص کرده
+    محاسبه و به کیف پول معرف واریز می‌شه و بلافاصله پیام واریزی هم براش
+    ارسال می‌شه."""
+    try:
+        referral = await db.reward_referral_purchase(buyer_user_id, purchase_amount, order_id=order_id, source=source)
+    except Exception:
+        logger.exception("Referral purchase reward failed")
+        return
+    if not referral:
+        return
+    try:
+        await bot.send_message(
+            referral["referrer_telegram_id"],
+            "🤝 پاداش معرفی\n\n"
+            f"«{referral['referred_name']}» که با لینک معرفی شما وارد ربات شده، خریدی به مبلغ "
+            f"{referral['purchase_amount']:,} تومان انجام داد.\n"
+            f"💰 {referral['reward']:,} تومان پاداش معرفی به کیف پول شما واریز شد.\n"
+            f"💳 موجودی جدید: {referral['referrer_new_balance']:,} تومان",
+        )
+    except Exception:
+        pass
 
 
 class DepositForm(StatesGroup):
@@ -520,13 +547,16 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
             product,
         )
         await db.update_user_balance(db_user["id"], -final_price)
-        await db.create_order(
+        order_id, _order_code = await db.create_order(
             db_user["id"],
             product_id,
             final_price,
             "balance",
             f"خرید {product['name']}"
             + (f" (کوپن: {coupon_code}، تخفیف: {discount_amount:,} تومان)" if coupon_code else ""),
+        )
+        await _reward_referral_and_notify(
+            callback.bot, db, db_user["id"], final_price, order_id, f"خرید {product['name']}"
         )
         # ثبت استفاده از کوپن
         if coupon_id and coupon_code:
@@ -920,12 +950,15 @@ async def renew_service_execute(callback: CallbackQuery, db_user: dict):
             sub_id, product["duration_days"], product["volume_gb"]
         )
         await db.update_user_balance(db_user["id"], -product["price"])
-        await db.create_order(
+        order_id, _order_code = await db.create_order(
             db_user["id"],
             product["id"],
             product["price"],
             "balance",
             f"تمدید {product['name']} (سرویس #{sub_id})",
+        )
+        await _reward_referral_and_notify(
+            callback.bot, db, db_user["id"], product["price"], order_id, f"تمدید {product['name']}"
         )
         await callback.message.edit_text(
             f"✅ سرویس با موفقیت تمدید شد!\n\n"
@@ -1264,9 +1297,12 @@ async def reseller_confirm(callback: CallbackQuery, db_user: dict):
     await db.create_or_renew_reseller(
         db_user["id"], plan_id, plan["panel_id"], plan["volume_gb"], expires_at,
     )
-    await db.create_order(
+    order_id, _order_code = await db.create_order(
         db_user["id"], None, plan["price"], "balance",
         f"خرید/تمدید نمایندگی: {plan['name']}",
+    )
+    await _reward_referral_and_notify(
+        callback.bot, db, db_user["id"], plan["price"], order_id, f"نمایندگی: {plan['name']}"
     )
 
     text = (
@@ -1371,6 +1407,7 @@ async def ticket_new_message(message: Message, state: FSMContext, db_user: dict,
                 f"🎫 تیکت جدید #{ticket_id}\n"
                 f"👤 {db_user.get('full_name') or ''} (@{db_user.get('username') or '-'}) — {db_user['telegram_id']}\n"
                 f"📝 موضوع: {data.get('subject', '')}\n\n{message.text}",
+                reply_markup=admin_ticket_notify_inline(ticket_id),
             )
         except Exception:
             pass
@@ -1458,6 +1495,7 @@ async def ticket_reply_save(message: Message, state: FSMContext, db_user: dict, 
             await message.bot.send_message(
                 admin_id,
                 f"🎫 پاسخ جدید روی تیکت #{ticket_id} از طرف کاربر:\n\n{message.text}",
+                reply_markup=admin_ticket_notify_inline(ticket_id),
             )
         except Exception:
             pass
@@ -1474,11 +1512,20 @@ async def referral_menu(message: Message, db_user: dict):
     me = await message.bot.get_me()
     link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
     stats = await db.get_referral_stats(db_user["id"])
-    reward = await db.get_setting("referral_reward_amount", "0")
+    reward_type = await db.get_setting("referral_reward_type", "percent")
+    reward_value_raw = await db.get_setting("referral_reward_value", "0")
+    try:
+        reward_value_num = float(reward_value_raw or "0")
+    except ValueError:
+        reward_value_num = 0
+    if reward_type == "fixed":
+        reward_desc = f"{int(reward_value_num):,} تومان به ازای هر خرید موفق"
+    else:
+        reward_desc = f"{reward_value_num:g}٪ از مبلغ هر خرید موفق"
     text = (
         "🤝 دعوت از دوستان\n\n"
-        f"با اشتراک‌گذاری لینک زیر، به ازای اولین شارژ موفق هر کسی که با این لینک وارد ربات شود، "
-        f"{int(reward or 0):,} تومان به کیف پول شما اضافه می‌شود:\n\n"
+        f"با اشتراک‌گذاری لینک زیر، به ازای هر خریدی که هرکسی با این لینک وارد ربات شود انجام می‌دهد، "
+        f"{reward_desc} به کیف پول شما اضافه می‌شود:\n\n"
         f"`{link}`\n\n"
         f"👥 تعداد افراد معرفی‌شده: {stats['referred_count']}\n"
         f"💰 مجموع پاداش دریافتی: {stats['total_earned']:,} تومان"

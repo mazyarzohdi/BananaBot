@@ -137,33 +137,43 @@ class Database:
             "total_earned": earned_row["total"] if earned_row else 0,
         }
 
-    async def maybe_reward_referral(self, referred_user_id: int) -> dict | None:
-        """وقتی اولین پرداخت یک کاربر تایید می‌شه صدا زده می‌شه. اگه سیستم
-        رفرال فعال باشه، این کاربر معرف داشته باشه، و قبلاً پاداشی برای
-        همین کاربر پرداخت نشده باشه، مبلغ پاداش رو به موجودی معرف اضافه
-        می‌کنه و یک بار برای همیشه ثبتش می‌کنه (جدول referral_earnings
-        محدودیت UNIQUE روی referred_user_id داره، پس دوباره‌کاری امکان‌پذیر
-        نیست حتی در شرایط رقابتی). خروجی: اطلاعات لازم برای اطلاع‌رسانی به
-        معرف، یا None اگه واجد شرایط نبود."""
+    async def calc_referral_reward(self, purchase_amount: int) -> int:
+        """مبلغ پاداش رفرال رو بر اساس نوع تنظیم‌شده توسط ادمین (درصدی از
+        مبلغ خرید یا مبلغ ثابت) محاسبه می‌کنه."""
+        reward_type = await self.get_setting("referral_reward_type", "percent")
+        try:
+            reward_value = float(await self.get_setting("referral_reward_value", "0") or "0")
+        except ValueError:
+            reward_value = 0
+        if reward_value <= 0:
+            return 0
+        if reward_type == "fixed":
+            return int(reward_value)
+        # درصدی
+        return int(purchase_amount * reward_value / 100)
+
+    async def reward_referral_purchase(
+        self, buyer_user_id: int, purchase_amount: int,
+        order_id: int | None = None, source: str = "",
+    ) -> dict | None:
+        """وقتی کاربری (که با لینک معرفی وارد ربات شده) یک خرید موفق انجام
+        می‌ده صدا زده می‌شه — چه خرید سرویس جدید، چه تمدید، چه خرید/تمدید
+        نمایندگی. اگه سیستم رفرال فعال باشه، این کاربر معرف داشته باشه، و
+        پاداش محاسبه‌شده (درصدی از مبلغ خرید یا مبلغ ثابت — هرکدوم که ادمین
+        تنظیم کرده) بزرگ‌تر از صفر باشه، همون لحظه به موجودی معرف اضافه
+        می‌شه و در جدول referral_earnings ثبت می‌شه. برخلاف نسخه‌ی قبلی،
+        این پاداش یک‌بار مصرف نیست — به ازای هر خرید موفق کاربر معرفی‌شده،
+        دوباره محاسبه و واریز می‌شه. خروجی: اطلاعات لازم برای اطلاع‌رسانی
+        به معرف، یا None اگه واجد شرایط نبود."""
         if await self.get_setting("referral_enabled", "0") != "1":
             return None
-        try:
-            reward = int(await self.get_setting("referral_reward_amount", "0") or "0")
-        except ValueError:
-            reward = 0
-        if reward <= 0:
-            return None
 
-        user = await self._fetchone("SELECT * FROM users WHERE id = ?", (referred_user_id,))
+        user = await self._fetchone("SELECT * FROM users WHERE id = ?", (buyer_user_id,))
         if not user or not user.get("referred_by"):
             return None
 
-        # Only reward on the referred user's FIRST-ever approved payment.
-        approved_count = await self._fetchone(
-            "SELECT COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
-            (referred_user_id,),
-        )
-        if not approved_count or approved_count["c"] != 1:
+        reward = await self.calc_referral_reward(purchase_amount)
+        if reward <= 0:
             return None
 
         referrer_id = user["referred_by"]
@@ -171,21 +181,18 @@ class Database:
         if not referrer:
             return None
 
-        try:
-            await self._execute(
-                "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, amount, source) "
-                "VALUES (?, ?, ?, 'first_deposit')",
-                (referrer_id, referred_user_id, reward),
-            )
-        except Exception:
-            # UNIQUE(referred_user_id) already has a row — reward already granted.
-            return None
-
-        await self.update_user_balance(referrer_id, reward)
+        await self._execute(
+            "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, order_id, amount, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (referrer_id, buyer_user_id, order_id, reward, source or "purchase"),
+        )
+        new_balance = await self.update_user_balance(referrer_id, reward)
         return {
             "referrer_telegram_id": referrer["telegram_id"],
             "reward": reward,
+            "referrer_new_balance": new_balance,
             "referred_name": user.get("full_name") or user.get("username") or str(user.get("telegram_id")),
+            "purchase_amount": purchase_amount,
         }
 
     async def get_all_users_count(self, search: str = "") -> int:

@@ -545,54 +545,6 @@ def approve_payment(payment_id: int, admin_note: str = "", handled_by: int | Non
         return True
 
 
-def maybe_reward_referral(referred_user_id: int) -> dict | None:
-    """نسخه‌ی sync همون منطق database/db.py/payment_webhook_server.py برای
-    پنل جنگو. فقط روی اولین پرداخت تاییدشده‌ی کاربر معرفی‌شده پاداش می‌ده،
-    دقیقاً یک بار (constraint یکتای referred_user_id تضمینش می‌کنه)."""
-    if get_setting("referral_enabled", "0") != "1":
-        return None
-    try:
-        reward = int(get_setting("referral_reward_amount", "0") or "0")
-    except ValueError:
-        reward = 0
-    if reward <= 0:
-        return None
-
-    with get_conn() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (referred_user_id,)).fetchone()
-        if not user or not user["referred_by"]:
-            return None
-
-        approved_count = conn.execute(
-            "SELECT COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
-            (referred_user_id,),
-        ).fetchone()
-        if not approved_count or approved_count["c"] != 1:
-            return None
-
-        referrer = conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user["referred_by"],)
-        ).fetchone()
-        if not referrer:
-            return None
-
-        try:
-            conn.execute(
-                "INSERT INTO referral_earnings (referrer_user_id, referred_user_id, amount, source) "
-                "VALUES (?, ?, ?, 'first_deposit')",
-                (referrer["id"], referred_user_id, reward),
-            )
-        except sqlite3.IntegrityError:
-            return None  # already rewarded (UNIQUE(referred_user_id))
-
-        conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (reward, referrer["id"]))
-        return {
-            "referrer_telegram_id": referrer["telegram_id"],
-            "reward": reward,
-            "referred_name": user["full_name"] or user["username"] or str(user["telegram_id"]),
-        }
-
-
 def reject_payment(payment_id: int, admin_note: str = "", handled_by: int | None = None) -> bool:
     """Same atomicity reasoning as approve_payment above."""
     with get_conn() as conn:

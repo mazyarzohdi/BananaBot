@@ -381,6 +381,23 @@ async def admin_ticket_reply_save(message: Message, state: FSMContext):
     except Exception:
         pass
 
+    # به بقیه‌ی ادمین‌ها هم اطلاع بده که این تیکت پاسخ داده شد — همراه با
+    # متن پاسخ و اینکه کدوم ادمین جواب داده — تا از دوباره‌کاری و پاسخ‌های
+    # همزمان جلوگیری بشه.
+    replier_name = message.from_user.full_name or (
+        f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
+    )
+    for admin_id in get_settings().admin_ids:
+        if admin_id == message.from_user.id:
+            continue
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"🎫 تیکت #{ticket_id} توسط {replier_name} پاسخ داده شد:\n\n{reply_text}",
+            )
+        except Exception:
+            pass
+
 
 @router.callback_query(F.data.startswith("aticket_close:"))
 async def admin_ticket_close(callback: CallbackQuery):
@@ -1206,17 +1223,6 @@ async def pay_confirm(callback: CallbackQuery, is_admin: bool):
         except Exception:
             pass
 
-        referral = await db.maybe_reward_referral(payment["user_id"])
-        if referral:
-            try:
-                await callback.bot.send_message(
-                    referral["referrer_telegram_id"],
-                    f"🤝 پاداش معرفی: {referral['reward']:,} تومان بابت اولین شارژ «{referral['referred_name']}» "
-                    "به کیف پول شما اضافه شد!",
-                )
-            except Exception:
-                pass
-
     await _finalize_payment_messages(
         callback.bot, db, payment,
         _payment_status_text(payment, "approved", callback.from_user.id),
@@ -1814,12 +1820,21 @@ async def broadcast_send(message: Message, state: FSMContext):
 
 # ─── Settings ────────────────────────────────────────────────────────────────
 
-# تعریف مشخصات هر کلید تنظیمات
+# دکمه‌های آماده برای کلیدهای دوحالته (روشن/خاموش)
+_BOOL_CHOICES = [("1", "✅ فعال کردن"), ("0", "❌ غیرفعال کردن")]
+# دکمه‌های آماده برای نوع پاداش رفرال
+_REFERRAL_TYPE_CHOICES = [("percent", "📊 درصدی از مبلغ خرید"), ("fixed", "💰 مبلغ ثابت تومانی")]
+
+# تعریف مشخصات هر کلید تنظیمات.
+# type: "text" (پیش‌فرض) = با تایپ مقدار جدید تغییر می‌کند.
+#       "bool" / "choice" = با دکمه‌ی شیشه‌ای و بدون تایپ عوض می‌شود؛ زدن
+#       دکمه‌ی مربوطه همون لحظه ذخیره می‌شه و توی همون پیام (بدون باز شدن
+#       منوی جدید) وضعیت به‌روز نشون داده می‌شه.
 _SETTINGS_META = {
     "welcome_text":       {"label": "👋 متن خوش‌آمد",            "hint": "متن پیامی که کاربران تازه‌وارد دریافت می‌کنند."},
     "support_text":       {"label": "🆘 متن پشتیبانی",           "hint": "متن نمایش‌داده‌شده در بخش پشتیبانی."},
     "support_username":   {"label": "📱 یوزرنیم پشتیبان",        "hint": "یوزرنیم ادمین پشتیبانی (بدون @). مثال: MorsVpnAdmin"},
-    "trial_enabled":      {"label": "🎁 اکانت تست (فعال/غیرفعال)", "hint": "فعال‌بودن اکانت تست: 1 = فعال، 0 = غیرفعال"},
+    "trial_enabled":      {"label": "🎁 اکانت تست", "hint": "فعال یا غیرفعال بودن اکانت تست.", "type": "bool", "choices": _BOOL_CHOICES},
     "trial_product_id":   {"label": "📦 ID محصول تست",            "hint": "آیدی عددی محصولی که برای اکانت تست استفاده می‌شود."},
     "trial_panel_id":     {"label": "🖥 ID پنل تست",              "hint": "آیدی عددی پنلی که اکانت تست روی آن ساخته می‌شود."},
     "trial_volume_gb":    {"label": "📊 حجم تست (GB)",            "hint": "حجم اکانت تست به گیگابایت. مثال: 0.1"},
@@ -1827,20 +1842,40 @@ _SETTINGS_META = {
     "channel_required":   {"label": "🔒 کانال اجباری (ID)",       "hint": "آیدی عددی یا یوزرنیم کانال. مثال: -1001234567890 یا @channel\nبرای غیرفعال‌کردن - بفرستید."},
     "channel_invite_link":{"label": "🔗 لینک دعوت کانال",         "hint": "لینک دعوت کانال که به کاربران نمایش داده می‌شود.\nمثال: https://t.me/morsVPN"},
     "min_deposit":        {"label": "💰 حداقل شارژ (تومان)",      "hint": "کمترین مبلغ قابل شارژ کیف پول به تومان. مثال: 10000"},
-    "auto_payment_enabled": {"label": "🤖 تایید خودکار پرداخت (پیامک بانکی)", "hint": "1 = فعال (تشخیص خودکار از روی پیامک بانک)، 0 = غیرفعال (روش قبلی: ارسال رسید و تأیید دستی ادمین)"},
+    "auto_payment_enabled": {"label": "🤖 تایید خودکار پرداخت (پیامک بانکی)", "hint": "فعال = تشخیص خودکار از روی پیامک بانک. غیرفعال = روش قبلی: ارسال رسید و تأیید دستی ادمین.", "type": "bool", "choices": _BOOL_CHOICES},
     "auto_payment_secret":  {"label": "🔑 کلید امنیتی وبهوک پیامک", "hint": "این مقدار باید دقیقاً همون چیزی باشه که در هدر X-Webhook-Secret برنامه‌ی فورواردر پیامک تنظیم می‌کنید. برای امنیت، یک رشته‌ی تصادفی و طولانی انتخاب کنید."},
     "auto_payment_port":    {"label": "🔌 پورت وبهوک پرداخت خودکار", "hint": "پورتی که سرویس مستقل وبهوک پیامک بانکی روی آن گوش می‌دهد — کاملاً جدا از پورت پنل وب مینی‌اپ. بعد از تغییر، این سرویس خودکار ری‌استارت می‌شود تا پورت جدید اعمال شود. مطمئن شوید این پورت در فایروال سرور باز است."},
-    "support_contact_enabled": {"label": "📞 نمایش آیدی پشتیبانی (فعال/غیرفعال)", "hint": "1 = فعال (متن/آیدی پشتیبانی بالای بخش پشتیبانی نمایش داده می‌شود)، 0 = غیرفعال (فقط گزینه‌ی تیکت نمایش داده می‌شود)"},
-    "expiry_reminder_enabled": {"label": "⏰ یادآور انقضا (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال. با فعال بودن، کاربران و نمایندگان قبل از انقضای سرویس/نمایندگی‌شان پیام یادآوری دریافت می‌کنند."},
+    "support_contact_enabled": {"label": "📞 نمایش آیدی پشتیبانی", "hint": "فعال = متن/آیدی پشتیبانی بالای بخش پشتیبانی نمایش داده می‌شود. غیرفعال = فقط گزینه‌ی تیکت نمایش داده می‌شود.", "type": "bool", "choices": _BOOL_CHOICES},
+    "expiry_reminder_enabled": {"label": "⏰ یادآور انقضا", "hint": "با فعال بودن، کاربران و نمایندگان قبل از انقضای سرویس/نمایندگی‌شان پیام یادآوری دریافت می‌کنند.", "type": "bool", "choices": _BOOL_CHOICES},
     "expiry_reminder_days_before": {"label": "⏰ فاصله یادآور انقضا (روز)", "hint": "چند روز قبل از انقضا به کاربر/نماینده پیام یادآوری فرستاده شود. مثال: 3"},
-    "referral_enabled": {"label": "🤝 سیستم معرفی (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال"},
-    "referral_reward_amount": {"label": "🤝 مبلغ پاداش معرفی (تومان)", "hint": "مبلغی که به معرف، بعد از اولین شارژ موفق کاربر معرفی‌شده، به کیف پولش اضافه می‌شود. 0 = بدون پاداش."},
-    "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده (فعال/غیرفعال)", "hint": "1 = فعال، 0 = غیرفعال. با فعال بودن، دیتابیس ربات و دیتابیس هر پنل X-UI به‌صورت خودکار بکاپ گرفته و برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود."},
+    "referral_enabled": {"label": "🤝 سیستم معرفی", "hint": "فعال یا غیرفعال بودن سیستم معرفی (رفرال).", "type": "bool", "choices": _BOOL_CHOICES},
+    "referral_reward_type": {
+        "label": "🤝 نوع پاداش معرفی",
+        "hint": "پاداشی که به ازای هر خرید موفق کاربر معرفی‌شده به کیف پول معرف واریز می‌شود، یا درصدی از مبلغ همون خرید است یا یک مبلغ ثابت.",
+        "type": "choice", "choices": _REFERRAL_TYPE_CHOICES,
+    },
+    "referral_reward_value": {
+        "label": "🤝 مقدار پاداش معرفی",
+        "hint": "اگر نوع پاداش «درصدی» است: عددی بین 1 تا 100 وارد کنید (درصدی از مبلغ هر خرید کاربر معرفی‌شده). اگر «مبلغ ثابت» است: مبلغی به تومان وارد کنید که به ازای هر خرید کاربر معرفی‌شده به کیف پول معرف واریز می‌شود. 0 = بدون پاداش.",
+    },
+    "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده", "hint": "با فعال بودن، دیتابیس ربات و دیتابیس هر پنل X-UI به‌صورت خودکار بکاپ گرفته و برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود.", "type": "bool", "choices": _BOOL_CHOICES},
     "backup_schedule_interval_hours": {"label": "🗄 فاصله بکاپ خودکار (ساعت)", "hint": "هر چند ساعت یک‌بار بکاپ خودکار گرفته شود. مثال: 24 (هر روز یک‌بار)"},
     "backup_schedule_retention_count": {"label": "🗄 تعداد بکاپ‌های نگه‌داشته‌شده", "hint": "چند بکاپ خودکار اخیر روی سرور نگه‌داشته شود؛ بکاپ‌های خودکار قدیمی‌تر خودکار پاک می‌شوند. مثال: 14"},
 }
 
 _SETTINGS_KEYS = list(_SETTINGS_META.keys())
+
+
+def _setting_display_value(key: str, value: str) -> str:
+    """مقدار خام یک تنظیم رو برای نمایش انسانی برمی‌گردونه (مثلاً '1' -> '✅ فعال')."""
+    meta = _SETTINGS_META.get(key, {})
+    choices = meta.get("choices")
+    if choices:
+        for v, label in choices:
+            if v == value:
+                # ایموجی ابتدای برچسب دکمه رو هم برای نمایش خلاصه نگه می‌داریم
+                return label
+    return value
 
 
 def settings_main_inline() -> InlineKeyboardMarkup:
@@ -1855,10 +1890,38 @@ async def _settings_overview_text(db) -> str:
     lines = ["⚙️ تنظیمات ربات\n"]
     for key, meta in _SETTINGS_META.items():
         v = await db.get_setting(key, "")
-        v_safe = html.escape(v[:60]) + ("…" if len(v) > 60 else "")
-        lines.append(f"{meta['label']}:\n  <code>{v_safe or '—'}</code>\n")
+        if meta.get("type") in ("bool", "choice"):
+            v_safe = html.escape(_setting_display_value(key, v)) if v else "—"
+        else:
+            v_safe = html.escape(v[:60]) + ("…" if len(v) > 60 else "")
+            v_safe = v_safe or "—"
+        lines.append(f"{meta['label']}:\n  <code>{v_safe}</code>\n")
     lines.append("\nبرای تغییر هر مورد روی دکمه مربوطه بزنید 👇")
     return "\n".join(lines)
+
+
+def _toggle_setting_inline(key: str, current: str) -> InlineKeyboardMarkup:
+    """کیبورد شیشه‌ای دکمه‌های یک تنظیم دوحالته/چندگزینه‌ای؛ گزینه‌ی فعلی
+    با ✅ مشخص می‌شه، همه‌ی گزینه‌ها همیشه قابل انتخاب باقی می‌مونن تا
+    ادمین بتونه هر لحظه دوباره تغییرش بده."""
+    meta = _SETTINGS_META[key]
+    rows = []
+    for v, label in meta["choices"]:
+        prefix = "✅ " if v == current else "▫️ "
+        rows.append([InlineKeyboardButton(text=f"{prefix}{label}", callback_data=f"cfg_set:{key}:{v}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="cfg_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _toggle_setting_text(db, key: str, current: str) -> str:
+    meta = _SETTINGS_META[key]
+    cur_label = _setting_display_value(key, current) if current else "—"
+    return (
+        f"{meta['label']}\n\n"
+        f"📌 وضعیت فعلی: <b>{html.escape(cur_label)}</b>\n\n"
+        f"💡 {meta['hint']}\n\n"
+        "برای تغییر، یکی از دکمه‌های زیر را بزنید 👇"
+    )
 
 
 @router.message(F.text == t("admin_settings"))
@@ -1888,6 +1951,7 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
     if key not in _SETTINGS_META:
         await callback.answer("کلید نامعتبر", show_alert=True)
         return
+    meta = _SETTINGS_META[key]
 
     # کانال اجباری — فلو دو مرحله‌ای مخصوص خودش را دارد
     if key == "channel_required":
@@ -1899,6 +1963,18 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
             "برای غیرفعال‌کردن عضویت اجباری، علامت - را بفرستید.",
             reply_markup=cancel_kb(),
         )
+        await callback.answer()
+        return
+
+    # کلیدهای دوحالته/چندگزینه‌ای (روشن/خاموش، نوع پاداش و ...) — با دکمه‌ی
+    # شیشه‌ای و بدون تایپ عوض می‌شن؛ منوی اضافه‌ای هم باز نمی‌شه، همین پیام
+    # تنظیمات ویرایش می‌شه و وارد زیرمنوی همون کلید می‌شه.
+    if meta.get("type") in ("bool", "choice"):
+        await state.clear()
+        db = get_db()
+        cur = await db.get_setting(key, meta["choices"][-1][0])
+        text = await _toggle_setting_text(db, key, cur)
+        await callback.message.edit_text(text, reply_markup=_toggle_setting_inline(key, cur), parse_mode="HTML")
         await callback.answer()
         return
 
@@ -1935,6 +2011,42 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("cfg_set:"))
+async def cfg_set_value(callback: CallbackQuery, state: FSMContext):
+    """ذخیره‌ی مقدار یک تنظیم دوحالته/چندگزینه‌ای با زدن دکمه‌ی شیشه‌ای —
+    بدون تایپ و بدون باز شدن پیام/منوی جدید؛ همون پیام آپدیت می‌شه."""
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    try:
+        _, key, value = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer("داده نامعتبر", show_alert=True)
+        return
+    meta = _SETTINGS_META.get(key)
+    if not meta or meta.get("type") not in ("bool", "choice"):
+        await callback.answer("کلید نامعتبر", show_alert=True)
+        return
+    valid_values = {v for v, _ in meta["choices"]}
+    if value not in valid_values:
+        await callback.answer("مقدار نامعتبر", show_alert=True)
+        return
+
+    db = get_db()
+
+    # فعال‌سازی تایید خودکار پرداخت بدون کلید امنیتی از قبل تنظیم‌شده مجاز نیست
+    if key == "auto_payment_enabled" and value == "1" and not (await db.get_setting("auto_payment_secret", "")):
+        await callback.answer(
+            "❌ قبل از فعال‌کردن تایید خودکار، باید «کلید امنیتی وبهوک پیامک» را از همین منو تنظیم کنید.",
+            show_alert=True,
+        )
+        return
+
+    await db.set_setting(key, value)
+    text = await _toggle_setting_text(db, key, value)
+    await callback.message.edit_text(text, reply_markup=_toggle_setting_inline(key, value), parse_mode="HTML")
+    await callback.answer("✅ ذخیره شد.")
+
+
 @router.message(AdminSettingsForm.value)
 @admin_only
 async def cfg_save_value(message: Message, state: FSMContext):
@@ -1953,19 +2065,6 @@ async def cfg_save_value(message: Message, state: FSMContext):
     db = get_db()
 
     # اعتبارسنجی‌های اختصاصی
-    if key == "trial_enabled" and value not in ("0", "1"):
-        await message.answer("❌ فقط 0 یا 1 قابل قبول است.")
-        return
-    if key == "auto_payment_enabled":
-        if value not in ("0", "1"):
-            await message.answer("❌ فقط 0 یا 1 قابل قبول است.")
-            return
-        if value == "1" and not (await db.get_setting("auto_payment_secret", "")):
-            await message.answer(
-                "❌ قبل از فعال‌کردن تایید خودکار، باید «🔑 کلید امنیتی وبهوک پیامک» را "
-                "از همین منو تنظیم کنید — این کلید جلوی ارسال درخواست‌های جعلی به وبهوک را می‌گیرد."
-            )
-            return
     if key == "auto_payment_secret" and value and len(value) < 12:
         await message.answer("❌ برای امنیت، کلید باید حداقل ۱۲ کاراکتر باشد.")
         return
@@ -1986,6 +2085,17 @@ async def cfg_save_value(message: Message, state: FSMContext):
             assert float(value) > 0
         except (ValueError, AssertionError):
             await message.answer("❌ باید یک عدد مثبت باشد.")
+            return
+    if key == "referral_reward_value":
+        try:
+            fval = float(value)
+            assert fval >= 0
+        except (ValueError, AssertionError):
+            await message.answer("❌ باید یک عدد غیرمنفی باشد.")
+            return
+        reward_type = await db.get_setting("referral_reward_type", "percent")
+        if reward_type == "percent" and fval > 100:
+            await message.answer("❌ درصد نمی‌تواند بیشتر از 100 باشد.")
             return
     if key == "channel_invite_link":
         if value == "-":

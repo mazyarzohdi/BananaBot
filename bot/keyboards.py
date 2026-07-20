@@ -766,3 +766,12 @@ def admin_ticket_detail_inline(ticket_id: int, status: str) -> InlineKeyboardMar
         rows.append([InlineKeyboardButton(text="🔒 بستن تیکت", callback_data=f"aticket_close:{ticket_id}")])
     rows.append([InlineKeyboardButton(text="🔙 بازگشت به لیست تیکت‌ها", callback_data="aticket_list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_ticket_notify_inline(ticket_id: int) -> InlineKeyboardMarkup:
+    """کیبورد شیشه‌ای زیر پیامِ اطلاع‌رسانی تیکت جدید/پیام جدید به ادمین —
+    یک دکمه‌ی «ارسال پاسخ» مستقیم، بدون نیاز به رفتن به لیست تیکت‌ها."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ ارسال پاسخ", callback_data=f"aticket_reply:{ticket_id}")],
+        [InlineKeyboardButton(text="👁 مشاهده تیکت", callback_data=f"aticket_view:{ticket_id}")],
+    ])

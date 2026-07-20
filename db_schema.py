@@ -233,12 +233,14 @@ CREATE TABLE IF NOT EXISTS support_ticket_messages (
 CREATE TABLE IF NOT EXISTS referral_earnings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     referrer_user_id INTEGER NOT NULL,
-    referred_user_id INTEGER NOT NULL UNIQUE,
+    referred_user_id INTEGER NOT NULL,
+    order_id INTEGER DEFAULT NULL,
     amount INTEGER NOT NULL,
     source TEXT NOT NULL DEFAULT '',
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (referrer_user_id) REFERENCES users(id),
-    FOREIGN KEY (referred_user_id) REFERENCES users(id)
+    FOREIGN KEY (referred_user_id) REFERENCES users(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 """
 
@@ -262,7 +264,10 @@ DEFAULT_SETTINGS = {
     "expiry_reminder_enabled": "1",
     "expiry_reminder_days_before": "3",
     "referral_enabled": "0",
-    "referral_reward_amount": "0",
+    # نوع پاداش معرفی: "percent" (درصدی از مبلغ هر خرید کاربر معرفی‌شده)
+    # یا "fixed" (مبلغ ثابت به ازای هر خرید کاربر معرفی‌شده).
+    "referral_reward_type": "percent",
+    "referral_reward_value": "0",
     "backup_schedule_enabled": "0",
     "backup_schedule_interval_hours": "24",
     "backup_schedule_retention_count": "14",
@@ -362,6 +367,56 @@ def reconcile(db_path: str) -> dict:
                 report["tables_created"].append(table_name)
         conn.executescript(SCHEMA)  # CREATE TABLE IF NOT EXISTS — no-op for existing tables
 
+        # referral_earnings used to have UNIQUE(referred_user_id) — one
+        # reward per referred user, ever. The referral system now pays a
+        # commission on EVERY purchase the referred user makes, so that
+        # constraint has to go. SQLite can't drop a UNIQUE constraint with
+        # ALTER TABLE, so on databases created before this change we
+        # rebuild the table (preserving all existing rows) the one time
+        # it's needed; harmless / skipped on fresh or already-migrated DBs.
+        if "referral_earnings" in existing_tables:
+            unique_cols = set()
+            for idx in conn.execute("PRAGMA index_list(referral_earnings)").fetchall():
+                idx_name, is_unique = idx[1], idx[2]
+                if not is_unique:
+                    continue
+                for info in conn.execute(f"PRAGMA index_info({idx_name})").fetchall():
+                    unique_cols.add(info[2])
+            if "referred_user_id" in unique_cols:
+                conn.execute("ALTER TABLE referral_earnings RENAME TO referral_earnings_old")
+                conn.execute(
+                    "CREATE TABLE referral_earnings ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "referrer_user_id INTEGER NOT NULL,"
+                    "referred_user_id INTEGER NOT NULL,"
+                    "order_id INTEGER DEFAULT NULL,"
+                    "amount INTEGER NOT NULL,"
+                    "source TEXT NOT NULL DEFAULT '',"
+                    "created_at TEXT DEFAULT (datetime('now')),"
+                    "FOREIGN KEY (referrer_user_id) REFERENCES users(id),"
+                    "FOREIGN KEY (referred_user_id) REFERENCES users(id),"
+                    "FOREIGN KEY (order_id) REFERENCES orders(id)"
+                    ")"
+                )
+                old_cols = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(referral_earnings_old)"
+                    ).fetchall()
+                }
+                copy_cols = [
+                    c for c in
+                    ("id", "referrer_user_id", "referred_user_id", "amount", "source", "created_at")
+                    if c in old_cols
+                ]
+                conn.execute(
+                    f"INSERT INTO referral_earnings ({', '.join(copy_cols)}) "
+                    f"SELECT {', '.join(copy_cols)} FROM referral_earnings_old"
+                )
+                conn.execute("DROP TABLE referral_earnings_old")
+                report.setdefault("migrated", []).append(
+                    "referral_earnings: removed UNIQUE(referred_user_id) — رفرال حالا به‌ازای هر خرید پاداش می‌ده"
+                )
+
         for table, columns in expected.items():
             existing_cols = {
                 row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -412,5 +467,11 @@ if __name__ == "__main__":
         print(f"  + Columns added: {', '.join(result['columns_added'])}")
     if result.get("failed"):
         print(f"  ! Columns that could NOT be added automatically: {', '.join(result['failed'])}")
-    if not result["tables_created"] and not result["columns_added"] and not result.get("failed"):
+    if result.get("migrated"):
+        for m in result["migrated"]:
+            print(f"  ~ Migrated: {m}")
+    if (
+        not result["tables_created"] and not result["columns_added"]
+        and not result.get("failed") and not result.get("migrated")
+    ):
         print("  Already up to date — no changes needed.")
