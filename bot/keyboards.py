@@ -194,7 +194,7 @@ def services_inline(services: list[dict]) -> InlineKeyboardMarkup:
 
 def service_actions_inline(
     sub_id: int, show_back: bool = True, renewable: bool = True, auto_renew: bool = False,
-    apk_button_text: str | None = None,
+    trial_apps: list[dict] | None = None,
 ) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -210,8 +210,8 @@ def service_actions_inline(
         rows.append([InlineKeyboardButton(text="🔁 تمدید سرویس", callback_data=f"svc_renew:{sub_id}")])
         auto_renew_label = "🟢 تمدید خودکار: روشن" if auto_renew else "⚪️ تمدید خودکار: خاموش"
         rows.append([InlineKeyboardButton(text=auto_renew_label, callback_data=f"svc_autorenew:{sub_id}")])
-    if apk_button_text:
-        rows.append([InlineKeyboardButton(text=apk_button_text, callback_data="dl_trial_apk")])
+    for app in (trial_apps or []):
+        rows.append([InlineKeyboardButton(text=app["button_text"], callback_data=f"dl_trial_apk:{app['id']}")])
     if show_back:
         rows.append([InlineKeyboardButton(text=t("back"), callback_data="back_services")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -433,6 +433,36 @@ def admin_tutorial_detail_inline(tutorial_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🗑 حذف", callback_data=f"adm_tut_del:{tutorial_id}"),
             ],
             [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="adm_tut_list")],
+        ]
+    )
+
+
+def admin_trial_apps_inline(items: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for item in items:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📲 {item['button_text']}",
+                callback_data=f"adm_app_view:{item['id']}",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="➕ افزودن نرم‌افزار جدید", callback_data="adm_app_add")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="cfg_back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def admin_trial_app_detail_inline(app_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ ویرایش متن دکمه", callback_data=f"adm_app_editbtn:{app_id}")],
+            [InlineKeyboardButton(text="📝 ویرایش کپشن", callback_data=f"adm_app_editcap:{app_id}")],
+            [InlineKeyboardButton(text="📄 جایگزینی فایل", callback_data=f"adm_app_editfile:{app_id}")],
+            [InlineKeyboardButton(text="🗑 حذف", callback_data=f"adm_app_del:{app_id}")],
+            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="adm_app_list")],
         ]
     )
 

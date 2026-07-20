@@ -212,6 +212,16 @@ CREATE TABLE IF NOT EXISTS tutorials (
     sort_order INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS trial_apps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    button_text TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS support_tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

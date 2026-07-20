@@ -18,7 +18,6 @@ from bot.middlewares import UserMiddleware
 from config import get_settings
 from database import get_db
 from services.subscription import SubscriptionService
-from services.xui_client import XUIClient, XUIError
 from utils.helpers import format_expiry
 
 logging.basicConfig(
@@ -188,12 +187,12 @@ def _safe_sqlite_backup(src_path: str, dest_path: str):
 
 
 async def _scheduled_backup_loop(bot: Bot, db):
-    """طبق فاصله‌ی زمانی تنظیم‌شده توسط ادمین، از دیتابیس خود ربات و از
-    دیتابیس هر پنل X-UI بکاپ می‌گیره، توی data/backups (با پیشوند auto_
-    که جدا از بکاپ‌های دستی manage.sh باشه، ولی همچنان با الگوی bot_*.db
-    سازگاره تا از طریق منوی ریستور manage.sh هم قابل انتخاب باشه) ذخیره
-    می‌کنه، برای همه‌ی ادمین‌ها توی تلگرام می‌فرسته، و بکاپ‌های خودکار
-    قدیمی‌تر از حد نگه‌داری رو پاک می‌کنه."""
+    """طبق فاصله‌ی زمانی تنظیم‌شده توسط ادمین، فقط از دیتابیس خود ربات
+    بکاپ می‌گیره، توی data/backups (با پیشوند auto_ که جدا از بکاپ‌های
+    دستی manage.sh باشه، ولی همچنان با الگوی bot_*.db سازگاره تا از طریق
+    منوی ریستور manage.sh هم قابل انتخاب باشه) ذخیره می‌کنه، به‌صورت بی‌صدا
+    (بدون نوتیفیکیشن) برای همه‌ی ادمین‌ها توی تلگرام می‌فرسته، و بکاپ‌های
+    خودکار قدیمی‌تر از حد نگه‌داری رو پاک می‌کنه."""
     admin_ids = get_settings().admin_ids
     while True:
         try:
@@ -224,60 +223,26 @@ async def _scheduled_backup_loop(bot: Bot, db):
                                     admin_id,
                                     BufferedInputFile(bot_backup_bytes, filename=bot_backup_path.name),
                                     caption=f"🗄 بکاپ خودکار دیتابیس ربات — {ts}",
+                                    disable_notification=True,
                                 )
                             except Exception:
                                 pass
                     except Exception:
                         logger.exception("Scheduled bot.db backup failed")
 
-                    panels = await db.get_panels(active_only=False)
-                    for panel in panels:
-                        try:
-                            client = XUIClient(panel["url"], panel["api_token"])
-                            xui_bytes = await client.get_db_backup()
-                        except XUIError as e:
-                            logger.warning("XUI backup unavailable for panel '%s': %s", panel["name"], e)
-                            continue
-                        except Exception:
-                            logger.exception("XUI backup failed for panel '%s'", panel["name"])
-                            continue
-                        xui_dir = backups_dir / "xui"
-                        xui_dir.mkdir(parents=True, exist_ok=True)
-                        safe_name = "".join(c if c.isalnum() else "_" for c in panel["name"])
-                        xui_backup_path = xui_dir / f"xui_{safe_name}_{ts}.db"
-                        try:
-                            with open(xui_backup_path, "wb") as f:
-                                f.write(xui_bytes)
-                        except Exception:
-                            logger.exception("Could not save XUI backup file for panel '%s'", panel["name"])
-                            continue
-                        for admin_id in admin_ids:
-                            try:
-                                await bot.send_document(
-                                    admin_id,
-                                    BufferedInputFile(xui_bytes, filename=xui_backup_path.name),
-                                    caption=f"🗄 بکاپ خودکار پنل «{panel['name']}» — {ts}",
-                                )
-                            except Exception:
-                                pass
-
-                    # retention: keep only the newest N auto-backups of each kind
+                    # retention: keep only the newest N auto-backups
                     try:
                         retention = int(await db.get_setting("backup_schedule_retention_count", "14"))
                     except ValueError:
                         retention = 14
-                    for pattern, directory in (
-                        ("bot_auto_*.db", backups_dir),
-                        ("xui_*.db", backups_dir / "xui"),
-                    ):
-                        if not directory.exists():
-                            continue
-                        files = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-                        for old_file in files[retention:]:
-                            try:
-                                old_file.unlink()
-                            except Exception:
-                                pass
+                    files = sorted(
+                        backups_dir.glob("bot_auto_*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+                    )
+                    for old_file in files[retention:]:
+                        try:
+                            old_file.unlink()
+                        except Exception:
+                            pass
 
                     await db.set_setting("backup_last_run_at", str(int(now)))
         except Exception:

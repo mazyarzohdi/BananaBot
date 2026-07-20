@@ -31,6 +31,8 @@ from bot.keyboards import (
     admin_sub_actions_inline,
     admin_ticket_detail_inline,
     admin_ticket_list_inline,
+    admin_trial_app_detail_inline,
+    admin_trial_apps_inline,
     admin_tutorial_detail_inline,
     admin_tutorials_inline,
     admin_user_services_inline,
@@ -153,7 +155,17 @@ class AdminSettingsForm(StatesGroup):
     value = State()
 
 
-class AdminTrialApkForm(StatesGroup):
+class AdminTrialAppForm(StatesGroup):
+    """افزودن نرم‌افزار جدید به لیست دانلود اکانت تست."""
+    button_text = State()
+    file = State()
+    caption = State()
+
+
+class AdminTrialAppEditForm(StatesGroup):
+    """ویرایش یکی از فیلدهای یک نرم‌افزار موجود."""
+    button_text = State()
+    caption = State()
     file = State()
 
 
@@ -1843,8 +1855,6 @@ _SETTINGS_META = {
     "trial_panel_id":     {"label": "🖥 ID پنل تست",              "hint": "آیدی عددی پنلی که اکانت تست روی آن ساخته می‌شود."},
     "trial_volume_gb":    {"label": "📊 حجم تست (GB)",            "hint": "حجم اکانت تست به گیگابایت. مثال: 0.1"},
     "trial_duration_days":{"label": "⏱ مدت تست (روز)",           "hint": "تعداد روزهای اکانت تست. مثال: 1"},
-    "trial_apk_file_id":   {"label": "📲 فایل نرم‌افزار (APK) تست", "hint": "فایل APK نرم‌افزار اتصال را از کانال به ربات فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید. این فایل با زدن دکمه‌ی دانلود، برای کاربر فوروارد می‌شود. برای حذف فایل فعلی، علامت - را بفرستید."},
-    "trial_apk_button_text": {"label": "🔘 متن دکمه دانلود نرم‌افزار", "hint": "متنی که روی دکمه‌ی شیشه‌ای دانلود نرم‌افزار (کنار سایر دکمه‌های اکانت تست) نمایش داده می‌شود. مثال: 📲 دانلود نرم‌افزار اتصال"},
     "trial_extra_message": {"label": "📝 توضیحات بعد از اکانت تست", "hint": "متنی که بلافاصله بعد از پیام دریافت اکانت تست، به‌صورت یک پیام جداگانه برای کاربر ارسال می‌شود. برای غیرفعال‌کردن، علامت - را بفرستید."},
     "channel_required":   {"label": "🔒 کانال اجباری (ID)",       "hint": "آیدی عددی یا یوزرنیم کانال. مثال: -1001234567890 یا @channel\nبرای غیرفعال‌کردن - بفرستید."},
     "channel_invite_link":{"label": "🔗 لینک دعوت کانال",         "hint": "لینک دعوت کانال که به کاربران نمایش داده می‌شود.\nمثال: https://t.me/morsVPN"},
@@ -1865,7 +1875,7 @@ _SETTINGS_META = {
         "label": "🤝 مقدار پاداش معرفی",
         "hint": "اگر نوع پاداش «درصدی» است: عددی بین 1 تا 100 وارد کنید (درصدی از مبلغ هر خرید کاربر معرفی‌شده). اگر «مبلغ ثابت» است: مبلغی به تومان وارد کنید که به ازای هر خرید کاربر معرفی‌شده به کیف پول معرف واریز می‌شود. 0 = بدون پاداش.",
     },
-    "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده", "hint": "با فعال بودن، دیتابیس ربات و دیتابیس هر پنل X-UI به‌صورت خودکار بکاپ گرفته و برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود.", "type": "bool", "choices": _BOOL_CHOICES},
+    "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده", "hint": "با فعال بودن، فقط دیتابیس ربات به‌صورت خودکار بکاپ گرفته و به‌صورت بی‌صدا (بدون نوتیفیکیشن) برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود.", "type": "bool", "choices": _BOOL_CHOICES},
     "backup_schedule_interval_hours": {"label": "🗄 فاصله بکاپ خودکار (ساعت)", "hint": "هر چند ساعت یک‌بار بکاپ خودکار گرفته شود. مثال: 24 (هر روز یک‌بار)"},
     "backup_schedule_retention_count": {"label": "🗄 تعداد بکاپ‌های نگه‌داشته‌شده", "hint": "چند بکاپ خودکار اخیر روی سرور نگه‌داشته شود؛ بکاپ‌های خودکار قدیمی‌تر خودکار پاک می‌شوند. مثال: 14"},
 }
@@ -1890,6 +1900,7 @@ def settings_main_inline() -> InlineKeyboardMarkup:
     rows = []
     for key, meta in _SETTINGS_META.items():
         rows.append([InlineKeyboardButton(text=meta["label"], callback_data=f"cfg_edit:{key}")])
+    rows.append([InlineKeyboardButton(text="📲 مدیریت نرم‌افزارهای دانلود (تست)", callback_data="adm_app_list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1897,8 +1908,6 @@ async def _settings_overview_text(db) -> str:
     lines = ["⚙️ تنظیمات ربات\n"]
     for key, meta in _SETTINGS_META.items():
         v = await db.get_setting(key, "")
-        if key == "trial_apk_file_id":
-            v = await db.get_setting("trial_apk_file_name", "") if v else ""
         if meta.get("type") in ("bool", "choice"):
             v_safe = html.escape(_setting_display_value(key, v)) if v else "—"
         else:
@@ -1971,22 +1980,6 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
             "⚠️ ربات باید ادمین همان کانال باشد.\n"
             "برای غیرفعال‌کردن عضویت اجباری، علامت - را بفرستید.",
             reply_markup=cancel_kb(),
-        )
-        await callback.answer()
-        return
-
-    # فایل APK اکانت تست — به‌جای متن، باید فایل داکیومنت فوروارد/ارسال بشه
-    if key == "trial_apk_file_id":
-        await state.set_state(AdminTrialApkForm.file)
-        db = get_db()
-        cur_name = await db.get_setting("trial_apk_file_name", "")
-        await callback.message.answer(
-            f"{_SETTINGS_META[key]['label']}\n\n"
-            f"📌 فایل فعلی: <code>{html.escape(cur_name) or '—'}</code>\n\n"
-            f"💡 {_SETTINGS_META[key]['hint']}\n\n"
-            "فایل APK را از کانال به ربات فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید:",
-            reply_markup=cancel_kb(),
-            parse_mode="HTML",
         )
         await callback.answer()
         return
@@ -2164,40 +2157,221 @@ async def cfg_save_value(message: Message, state: FSMContext):
     )
 
 
-@router.message(AdminTrialApkForm.file)
+@router.callback_query(F.data == "adm_app_list")
+async def adm_app_list(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    await state.clear()
+    db = get_db()
+    items = await db.get_trial_apps()
+    text = (
+        f"📲 مدیریت نرم‌افزارهای دانلود اکانت تست\n\n"
+        f"تعداد نرم‌افزارهای ثبت‌شده: {len(items)}\n\n"
+        "این نرم‌افزارها به‌صورت دکمه‌ی شیشه‌ای کنار «اکانت تست» به کاربر نمایش داده می‌شوند."
+    )
+    await callback.message.edit_text(text, reply_markup=admin_trial_apps_inline(items))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_app_add")
+async def adm_app_add_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    await state.set_state(AdminTrialAppForm.button_text)
+    await callback.message.answer(
+        "📲 متن دکمه‌ی این نرم‌افزار را وارد کنید:\n(مثال: 📲 دانلود نرم‌افزار اندروید)",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminTrialAppForm.button_text)
 @admin_only
-async def adm_trial_apk_save(message: Message, state: FSMContext):
+async def adm_app_add_button_text(message: Message, state: FSMContext):
     if message.text == t("cancel"):
         await state.clear()
         await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
         return
-
-    db = get_db()
-
-    if (message.text or "").strip() == "-":
-        await db.set_setting("trial_apk_file_id", "")
-        await db.set_setting("trial_apk_file_name", "")
-        await state.clear()
-        await message.answer("✅ فایل نرم‌افزار تست حذف شد.", reply_markup=admin_menu())
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("❌ متن دکمه نمی‌تواند خالی باشد. دوباره وارد کنید:")
         return
+    await state.update_data(button_text=text)
+    await state.set_state(AdminTrialAppForm.file)
+    await message.answer(
+        f"✅ متن دکمه ثبت شد: «{text}»\n\n"
+        "📎 حالا فایل نصبی این نرم‌افزار را از کانال به ربات فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید:"
+    )
 
+
+@router.message(AdminTrialAppForm.file)
+@admin_only
+async def adm_app_add_file(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
     document = message.document
     if not document:
-        await message.answer(
-            "❌ لطفاً فایل APK را به‌صورت داکیومنت فوروارد یا ارسال کنید.\n"
-            "برای حذف فایل فعلی، علامت - را بفرستید."
-        )
+        await message.answer("❌ لطفاً فایل را به‌صورت داکیومنت فوروارد یا ارسال کنید.")
         return
+    await state.update_data(file_id=document.file_id, file_name=document.file_name or "app.apk")
+    await state.set_state(AdminTrialAppForm.caption)
+    await message.answer(
+        "📝 کپشن (توضیح) این فایل را وارد کنید؛ این متن همراه فایل برای کاربر ارسال می‌شود.\n"
+        "اگر کپشن نمی‌خواهید، علامت - را بفرستید."
+    )
 
-    file_name = document.file_name or "app.apk"
-    await db.set_setting("trial_apk_file_id", document.file_id)
-    await db.set_setting("trial_apk_file_name", file_name)
+
+@router.message(AdminTrialAppForm.caption)
+@admin_only
+async def adm_app_add_caption(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    caption = (message.text or "").strip()
+    if caption == "-":
+        caption = ""
+    data = await state.get_data()
+    db = get_db()
+    app_id = await db.add_trial_app(data["button_text"], data["file_id"], data["file_name"], caption)
     await state.clear()
     await message.answer(
-        f"✅ فایل «{file_name}» ذخیره شد.\n"
-        "این فایل با زدن دکمه‌ی دانلود، کنار سایر دکمه‌های اکانت تست برای کاربران فوروارد می‌شود.",
+        f"✅ نرم‌افزار «{data['button_text']}» با موفقیت اضافه شد! (شناسه: {app_id})",
         reply_markup=admin_menu(),
     )
+
+
+@router.callback_query(F.data.startswith("adm_app_view:"))
+async def adm_app_view(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    app_id = int(callback.data.split(":")[1])
+    db = get_db()
+    item = await db.get_trial_app(app_id)
+    if not item:
+        await callback.answer("پیدا نشد", show_alert=True)
+        return
+    text = (
+        f"📲 {item['button_text']}\n\n"
+        f"📄 فایل: <code>{html.escape(item['file_name'])}</code>\n"
+        f"📝 کپشن: {html.escape(item['caption']) or '—'}"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_trial_app_detail_inline(app_id), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_app_editbtn:"))
+async def adm_app_editbtn_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    app_id = int(callback.data.split(":")[1])
+    await state.update_data(app_id=app_id)
+    await state.set_state(AdminTrialAppEditForm.button_text)
+    await callback.message.answer("متن دکمه‌ی جدید را وارد کنید:", reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdminTrialAppEditForm.button_text)
+@admin_only
+async def adm_app_editbtn_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("❌ متن دکمه نمی‌تواند خالی باشد. دوباره وارد کنید:")
+        return
+    data = await state.get_data()
+    db = get_db()
+    await db.update_trial_app(data["app_id"], button_text=text)
+    await state.clear()
+    await message.answer("✅ متن دکمه بروزرسانی شد.", reply_markup=admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm_app_editcap:"))
+async def adm_app_editcap_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    app_id = int(callback.data.split(":")[1])
+    await state.update_data(app_id=app_id)
+    await state.set_state(AdminTrialAppEditForm.caption)
+    await callback.message.answer(
+        "کپشن جدید را وارد کنید (برای حذف کپشن، علامت - را بفرستید):",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminTrialAppEditForm.caption)
+@admin_only
+async def adm_app_editcap_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    caption = (message.text or "").strip()
+    if caption == "-":
+        caption = ""
+    data = await state.get_data()
+    db = get_db()
+    await db.update_trial_app(data["app_id"], caption=caption)
+    await state.clear()
+    await message.answer("✅ کپشن بروزرسانی شد.", reply_markup=admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm_app_editfile:"))
+async def adm_app_editfile_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    app_id = int(callback.data.split(":")[1])
+    await state.update_data(app_id=app_id)
+    await state.set_state(AdminTrialAppEditForm.file)
+    await callback.message.answer(
+        "فایل جدید را از کانال فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید:",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminTrialAppEditForm.file)
+@admin_only
+async def adm_app_editfile_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+    document = message.document
+    if not document:
+        await message.answer("❌ لطفاً فایل را به‌صورت داکیومنت فوروارد یا ارسال کنید.")
+        return
+    data = await state.get_data()
+    db = get_db()
+    await db.update_trial_app(
+        data["app_id"], file_id=document.file_id, file_name=document.file_name or "app.apk"
+    )
+    await state.clear()
+    await message.answer("✅ فایل بروزرسانی شد.", reply_markup=admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm_app_del:"))
+async def adm_app_delete(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    app_id = int(callback.data.split(":")[1])
+    db = get_db()
+    item = await db.get_trial_app(app_id)
+    name = item["button_text"] if item else f"#{app_id}"
+    await db.delete_trial_app(app_id)
+    items = await db.get_trial_apps()
+    await callback.message.edit_text(
+        f"🗑 نرم‌افزار «{name}» حذف شد.\n\n"
+        f"📲 مدیریت نرم‌افزارهای دانلود اکانت تست\nتعداد: {len(items)}",
+        reply_markup=admin_trial_apps_inline(items),
+    )
+    await callback.answer("✅ حذف شد.")
 
 
 # --- کانال اجباری (فلو دو مرحله‌ای) ---

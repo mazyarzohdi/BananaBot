@@ -704,9 +704,7 @@ async def trial_account(message: Message, db_user: dict):
             is_trial=True,
         )
 
-        apk_button_text = None
-        if await db.get_setting("trial_apk_file_id", ""):
-            apk_button_text = await db.get_setting("trial_apk_button_text", "") or "📲 دانلود نرم‌افزار اتصال"
+        trial_apps = await db.get_trial_apps()
 
         await message.answer(
             t(
@@ -717,7 +715,7 @@ async def trial_account(message: Message, db_user: dict):
             ),
             parse_mode="Markdown",
             reply_markup=service_actions_inline(
-                result["id"], show_back=False, renewable=False, apk_button_text=apk_button_text,
+                result["id"], show_back=False, renewable=False, trial_apps=trial_apps,
             ),
         )
 
@@ -731,17 +729,20 @@ async def trial_account(message: Message, db_user: dict):
         await message.answer(f"❌ خطا: {e}")
 
 
-@router.callback_query(F.data == "dl_trial_apk")
+@router.callback_query(F.data.startswith("dl_trial_apk:"))
 async def send_trial_apk(callback: CallbackQuery):
+    app_id = int(callback.data.split(":")[1])
     db = get_db()
-    file_id = await db.get_setting("trial_apk_file_id", "")
-    if not file_id:
-        await callback.answer("❌ فایل نرم‌افزار در حال حاضر موجود نیست.", show_alert=True)
+    app = await db.get_trial_app(app_id)
+    if not app:
+        await callback.answer("❌ این فایل دیگر موجود نیست.", show_alert=True)
         return
     try:
-        await callback.message.answer_document(file_id, caption="📲 نرم‌افزار اتصال")
+        await callback.message.answer_document(
+            app["file_id"], caption=app["caption"] or None,
+        )
     except Exception:
-        logger.exception("Failed to send trial apk")
+        logger.exception("Failed to send trial app file")
         await callback.answer("❌ خطا در ارسال فایل. با پشتیبانی تماس بگیرید.", show_alert=True)
         return
     await callback.answer()

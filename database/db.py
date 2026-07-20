@@ -694,6 +694,36 @@ class Database:
     async def delete_tutorial(self, tutorial_id: int):
         await self._execute("DELETE FROM tutorials WHERE id = ?", (tutorial_id,))
 
+    # --- Trial download apps ---
+    async def get_trial_apps(self) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM trial_apps ORDER BY sort_order, id"
+        )
+
+    async def get_trial_app(self, app_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM trial_apps WHERE id = ?", (app_id,)
+        )
+
+    async def add_trial_app(
+        self, button_text: str, file_id: str, file_name: str, caption: str = ""
+    ) -> int:
+        return await self._execute(
+            "INSERT INTO trial_apps (button_text, file_id, file_name, caption) "
+            "VALUES (?, ?, ?, ?)",
+            (button_text, file_id, file_name, caption),
+        )
+
+    async def update_trial_app(self, app_id: int, **fields):
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        params = tuple(fields.values()) + (app_id,)
+        await self._execute(f"UPDATE trial_apps SET {cols} WHERE id = ?", params)
+
+    async def delete_trial_app(self, app_id: int):
+        await self._execute("DELETE FROM trial_apps WHERE id = ?", (app_id,))
+
     # --- Coupons ---
     async def add_coupon(
         self,
