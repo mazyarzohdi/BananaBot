@@ -194,6 +194,7 @@ def services_inline(services: list[dict]) -> InlineKeyboardMarkup:
 
 def service_actions_inline(
     sub_id: int, show_back: bool = True, renewable: bool = True, auto_renew: bool = False,
+    apk_button_text: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -209,6 +210,8 @@ def service_actions_inline(
         rows.append([InlineKeyboardButton(text="🔁 تمدید سرویس", callback_data=f"svc_renew:{sub_id}")])
         auto_renew_label = "🟢 تمدید خودکار: روشن" if auto_renew else "⚪️ تمدید خودکار: خاموش"
         rows.append([InlineKeyboardButton(text=auto_renew_label, callback_data=f"svc_autorenew:{sub_id}")])
+    if apk_button_text:
+        rows.append([InlineKeyboardButton(text=apk_button_text, callback_data="dl_trial_apk")])
     if show_back:
         rows.append([InlineKeyboardButton(text=t("back"), callback_data="back_services")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

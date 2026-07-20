@@ -153,6 +153,10 @@ class AdminSettingsForm(StatesGroup):
     value = State()
 
 
+class AdminTrialApkForm(StatesGroup):
+    file = State()
+
+
 class AdminResellerPlanForm(StatesGroup):
     name = State()
     panel_id = State()
@@ -1839,6 +1843,9 @@ _SETTINGS_META = {
     "trial_panel_id":     {"label": "🖥 ID پنل تست",              "hint": "آیدی عددی پنلی که اکانت تست روی آن ساخته می‌شود."},
     "trial_volume_gb":    {"label": "📊 حجم تست (GB)",            "hint": "حجم اکانت تست به گیگابایت. مثال: 0.1"},
     "trial_duration_days":{"label": "⏱ مدت تست (روز)",           "hint": "تعداد روزهای اکانت تست. مثال: 1"},
+    "trial_apk_file_id":   {"label": "📲 فایل نرم‌افزار (APK) تست", "hint": "فایل APK نرم‌افزار اتصال را از کانال به ربات فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید. این فایل با زدن دکمه‌ی دانلود، برای کاربر فوروارد می‌شود. برای حذف فایل فعلی، علامت - را بفرستید."},
+    "trial_apk_button_text": {"label": "🔘 متن دکمه دانلود نرم‌افزار", "hint": "متنی که روی دکمه‌ی شیشه‌ای دانلود نرم‌افزار (کنار سایر دکمه‌های اکانت تست) نمایش داده می‌شود. مثال: 📲 دانلود نرم‌افزار اتصال"},
+    "trial_extra_message": {"label": "📝 توضیحات بعد از اکانت تست", "hint": "متنی که بلافاصله بعد از پیام دریافت اکانت تست، به‌صورت یک پیام جداگانه برای کاربر ارسال می‌شود. برای غیرفعال‌کردن، علامت - را بفرستید."},
     "channel_required":   {"label": "🔒 کانال اجباری (ID)",       "hint": "آیدی عددی یا یوزرنیم کانال. مثال: -1001234567890 یا @channel\nبرای غیرفعال‌کردن - بفرستید."},
     "channel_invite_link":{"label": "🔗 لینک دعوت کانال",         "hint": "لینک دعوت کانال که به کاربران نمایش داده می‌شود.\nمثال: https://t.me/morsVPN"},
     "min_deposit":        {"label": "💰 حداقل شارژ (تومان)",      "hint": "کمترین مبلغ قابل شارژ کیف پول به تومان. مثال: 10000"},
@@ -1890,6 +1897,8 @@ async def _settings_overview_text(db) -> str:
     lines = ["⚙️ تنظیمات ربات\n"]
     for key, meta in _SETTINGS_META.items():
         v = await db.get_setting(key, "")
+        if key == "trial_apk_file_id":
+            v = await db.get_setting("trial_apk_file_name", "") if v else ""
         if meta.get("type") in ("bool", "choice"):
             v_safe = html.escape(_setting_display_value(key, v)) if v else "—"
         else:
@@ -1962,6 +1971,22 @@ async def cfg_edit_start(callback: CallbackQuery, state: FSMContext):
             "⚠️ ربات باید ادمین همان کانال باشد.\n"
             "برای غیرفعال‌کردن عضویت اجباری، علامت - را بفرستید.",
             reply_markup=cancel_kb(),
+        )
+        await callback.answer()
+        return
+
+    # فایل APK اکانت تست — به‌جای متن، باید فایل داکیومنت فوروارد/ارسال بشه
+    if key == "trial_apk_file_id":
+        await state.set_state(AdminTrialApkForm.file)
+        db = get_db()
+        cur_name = await db.get_setting("trial_apk_file_name", "")
+        await callback.message.answer(
+            f"{_SETTINGS_META[key]['label']}\n\n"
+            f"📌 فایل فعلی: <code>{html.escape(cur_name) or '—'}</code>\n\n"
+            f"💡 {_SETTINGS_META[key]['hint']}\n\n"
+            "فایل APK را از کانال به ربات فوروارد کنید یا مستقیم به‌صورت داکیومنت ارسال کنید:",
+            reply_markup=cancel_kb(),
+            parse_mode="HTML",
         )
         await callback.answer()
         return
@@ -2103,6 +2128,8 @@ async def cfg_save_value(message: Message, state: FSMContext):
         elif not (value.startswith("http://") or value.startswith("https://")):
             await message.answer("❌ لینک باید با http:// یا https:// شروع شود.")
             return
+    if key == "trial_extra_message" and value == "-":
+        value = ""
 
     await db.set_setting(key, value)
     await state.clear()
@@ -2134,6 +2161,42 @@ async def cfg_save_value(message: Message, state: FSMContext):
         f"مقدار جدید: <code>{html.escape(value)}</code>{extra_note}",
         reply_markup=admin_menu(),
         parse_mode="HTML",
+    )
+
+
+@router.message(AdminTrialApkForm.file)
+@admin_only
+async def adm_trial_apk_save(message: Message, state: FSMContext):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=admin_menu())
+        return
+
+    db = get_db()
+
+    if (message.text or "").strip() == "-":
+        await db.set_setting("trial_apk_file_id", "")
+        await db.set_setting("trial_apk_file_name", "")
+        await state.clear()
+        await message.answer("✅ فایل نرم‌افزار تست حذف شد.", reply_markup=admin_menu())
+        return
+
+    document = message.document
+    if not document:
+        await message.answer(
+            "❌ لطفاً فایل APK را به‌صورت داکیومنت فوروارد یا ارسال کنید.\n"
+            "برای حذف فایل فعلی، علامت - را بفرستید."
+        )
+        return
+
+    file_name = document.file_name or "app.apk"
+    await db.set_setting("trial_apk_file_id", document.file_id)
+    await db.set_setting("trial_apk_file_name", file_name)
+    await state.clear()
+    await message.answer(
+        f"✅ فایل «{file_name}» ذخیره شد.\n"
+        "این فایل با زدن دکمه‌ی دانلود، کنار سایر دکمه‌های اکانت تست برای کاربران فوروارد می‌شود.",
+        reply_markup=admin_menu(),
     )
 
 
