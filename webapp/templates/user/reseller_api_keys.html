@@ -14,12 +14,63 @@
   <p class="meta">این کلید فقط همین یک‌بار نمایش داده می‌شود و بعد از خروج از این صفحه دیگر قابل بازیابی نیست. آن را همین حالا در جای امنی کپی و ذخیره کنید.</p>
   <div class="code-box" style="display:flex; align-items:center; gap:8px; direction:ltr; text-align:left;">
     <code id="new-api-key" style="user-select:all; word-break:break-all;">{{ new_raw_key }}</code>
-    <button type="button" class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('new-api-key').textContent)">
+    <button type="button" id="copy-api-key-btn" class="btn btn-sm btn-ghost" onclick="copyApiKey(this)">
       <i class="fa fa-copy"></i> کپی
     </button>
   </div>
 </div>
 {% endif %}
+
+<script>
+function copyApiKey(btn) {
+  var el = document.getElementById('new-api-key');
+  var text = el.textContent;
+  var originalHtml = btn.innerHTML;
+
+  function showSuccess() {
+    btn.innerHTML = '<i class="fa fa-check"></i> کپی شد';
+    setTimeout(function () { btn.innerHTML = originalHtml; }, 1500);
+  }
+
+  function showFailure() {
+    btn.innerHTML = '<i class="fa fa-triangle-exclamation"></i> کپی نشد';
+    setTimeout(function () { btn.innerHTML = originalHtml; }, 1500);
+  }
+
+  function fallbackCopy() {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      selection.removeAllRanges();
+      if (ok) { showSuccess(); } else { showFailure(); }
+    } catch (err) {
+      showFailure();
+    }
+  }
+
+  // navigator.clipboard requires a secure context (HTTPS or localhost) and
+  // may be undefined over plain HTTP, which is why the button previously
+  // appeared to do nothing.
+  if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(showSuccess, fallbackCopy);
+  } else {
+    fallbackCopy();
+  }
+}
+</script>
 
 <div class="card mt-3">
   <h2 class="card-title"><i class="fa fa-key"></i> ساخت کلید جدید</h2>
@@ -77,8 +128,12 @@
   <div class="code-box" style="direction:ltr; text-align:left;"><code>{{ api_base_url }}</code></div>
   <p class="meta mt-2">
     هر درخواست باید هدر <code>Authorization: Bearer &lt;کلید&gt;</code> و برای درخواست‌های POST/PATCH/DELETE
-    هدرهای <code>X-Timestamp</code> و <code>X-Nonce</code> را نیز داشته باشد. مستندات کامل API را از ادمین
-    درخواست کنید یا فایل <code>API_DOCUMENTATION.md</code> را ببینید.
+    هدرهای <code>X-Timestamp</code> و <code>X-Nonce</code> را نیز داشته باشد.
+  </p>
+  <p class="meta mt-2">
+    <i class="fa fa-book"></i>
+    مستندات کامل API:
+    <a href="https://github.com/mazyarzohdi/BananaBot/blob/main/API_DOCUMENTATION.md" target="_blank" rel="noopener noreferrer">API_DOCUMENTATION.md</a>
   </p>
 </div>
 
