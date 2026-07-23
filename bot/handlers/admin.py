@@ -1303,7 +1303,7 @@ async def _render_user_card(db, tid: int):
     )
     if user.get("admin_note"):
         text += f"\n📝 یادداشت: {html.escape(user['admin_note'])}"
-    reseller = await db.get_reseller_by_user_id(user["id"])
+    reseller = await db.get_reseller_by_user(user["id"])
     reseller_id = reseller["id"] if reseller else None
     if reseller:
         text += "\n🤝 نماینده: بله"
@@ -1401,7 +1401,7 @@ async def ulist_view_user(callback: CallbackQuery):
         return
     user = await db.get_user_by_telegram_id(tid)
     banned = bool(user.get("is_banned")) if user else False
-    reseller = await db.get_reseller_by_user_id(user["id"]) if user else None
+    reseller = await db.get_reseller_by_user(user["id"]) if user else None
     reseller_id = reseller["id"] if reseller else None
     await callback.message.edit_text(
         text,
@@ -1530,7 +1530,7 @@ async def uadm_make_reseller_confirm(callback: CallbackQuery, is_admin: bool):
     if not user:
         await callback.answer("کاربر پیدا نشد", show_alert=True)
         return
-    if await db.get_reseller_by_user_id(user["id"]):
+    if await db.get_reseller_by_user(user["id"]):
         await callback.answer("این کاربر از قبل نماینده است.", show_alert=True)
         return
     panels = await db.get_panels()
@@ -1559,7 +1559,7 @@ async def uadm_make_reseller_do(callback: CallbackQuery, is_admin: bool):
         await callback.answer("کاربر پیدا نشد", show_alert=True)
         await callback.message.delete()
         return
-    if await db.get_reseller_by_user_id(user["id"]):
+    if await db.get_reseller_by_user(user["id"]):
         await callback.answer("این کاربر از قبل نماینده است.", show_alert=True)
         await callback.message.delete()
         return
