@@ -467,11 +467,16 @@ def admin_trial_app_detail_inline(app_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def user_admin_card_inline(tid: int, banned: bool) -> InlineKeyboardMarkup:
+def user_admin_card_inline(tid: int, banned: bool, reseller_id: int | None = None) -> InlineKeyboardMarkup:
     ban_btn = (
         InlineKeyboardButton(text="✅ آن‌بن کردن", callback_data=f"uadm_unban:{tid}")
         if banned
         else InlineKeyboardButton(text="🚫 بن کردن", callback_data=f"uadm_ban:{tid}")
+    )
+    reseller_btn = (
+        InlineKeyboardButton(text="🤝 مشاهده پنل نمایندگی", callback_data=f"resv:{reseller_id}")
+        if reseller_id
+        else InlineKeyboardButton(text="🤝 تبدیل به نماینده", callback_data=f"uadm_mkres:{tid}")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -484,6 +489,7 @@ def user_admin_card_inline(tid: int, banned: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
             [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
+            [reseller_btn],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
         ]
     )
@@ -708,12 +714,17 @@ def reseller_delete_confirm_inline(reseller_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1) -> InlineKeyboardMarkup:
+def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1, reseller_id: int | None = None) -> InlineKeyboardMarkup:
     """کارت کاربر با دکمه بازگشت به لیست."""
     ban_btn = (
         InlineKeyboardButton(text="✅ آن‌بن کردن", callback_data=f"uadm_unban:{tid}")
         if banned
         else InlineKeyboardButton(text="🚫 بن کردن", callback_data=f"uadm_ban:{tid}")
+    )
+    reseller_btn = (
+        InlineKeyboardButton(text="🤝 مشاهده پنل نمایندگی", callback_data=f"resv:{reseller_id}")
+        if reseller_id
+        else InlineKeyboardButton(text="🤝 تبدیل به نماینده", callback_data=f"uadm_mkres:{tid}")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -726,8 +737,20 @@ def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1)
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
             [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
+            [reseller_btn],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
             [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"ulist_page:{back_page}:")],
+        ]
+    )
+
+
+def make_reseller_confirm_inline(tid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ بله، نماینده کن", callback_data=f"uadm_mkres_yes:{tid}"),
+                InlineKeyboardButton(text="❌ انصراف", callback_data=f"uadm_mkres_no:{tid}"),
+            ]
         ]
     )
 

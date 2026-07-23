@@ -38,6 +38,7 @@ from bot.keyboards import (
     admin_user_services_inline,
     cancel_kb,
     complete_purchase_inline,
+    make_reseller_confirm_inline,
     panel_actions_inline,
     panels_inline,
     payment_actions_inline,
@@ -1302,7 +1303,11 @@ async def _render_user_card(db, tid: int):
     )
     if user.get("admin_note"):
         text += f"\n📝 یادداشت: {html.escape(user['admin_note'])}"
-    markup = user_admin_card_inline(tid, banned)
+    reseller = await db.get_reseller_by_user_id(user["id"])
+    reseller_id = reseller["id"] if reseller else None
+    if reseller:
+        text += "\n🤝 نماینده: بله"
+    markup = user_admin_card_inline(tid, banned, reseller_id=reseller_id)
     return text, markup
 
 
@@ -1396,9 +1401,11 @@ async def ulist_view_user(callback: CallbackQuery):
         return
     user = await db.get_user_by_telegram_id(tid)
     banned = bool(user.get("is_banned")) if user else False
+    reseller = await db.get_reseller_by_user_id(user["id"]) if user else None
+    reseller_id = reseller["id"] if reseller else None
     await callback.message.edit_text(
         text,
-        reply_markup=user_admin_card_inline_with_back(tid, banned, back_page=back_page),
+        reply_markup=user_admin_card_inline_with_back(tid, banned, back_page=back_page, reseller_id=reseller_id),
     )
     await callback.answer()
 
@@ -1505,6 +1512,88 @@ async def uadm_unban(callback: CallbackQuery, is_admin: bool):
         await callback.bot.send_message(tid, "✅ دسترسی شما به ربات مجدداً فعال شد.")
     except Exception:
         pass
+
+
+# پیش‌فرض‌های تبدیل دستی کاربر به نماینده از داخل کارت کاربر — این مقادیر
+# بعد از ساخت از همان صفحه‌ی «مدیریت نماینده‌ها» (حجم/انقضا) قابل ویرایش‌اند.
+_MANUAL_RESELLER_DEFAULT_QUOTA_GB = 50
+_MANUAL_RESELLER_DEFAULT_DURATION_DAYS = 30
+
+
+@router.callback_query(F.data.startswith("uadm_mkres:"))
+async def uadm_make_reseller_confirm(callback: CallbackQuery, is_admin: bool):
+    if not is_admin:
+        return
+    tid = int(callback.data.split(":")[1])
+    db = get_db()
+    user = await db.get_user_by_telegram_id(tid)
+    if not user:
+        await callback.answer("کاربر پیدا نشد", show_alert=True)
+        return
+    if await db.get_reseller_by_user_id(user["id"]):
+        await callback.answer("این کاربر از قبل نماینده است.", show_alert=True)
+        return
+    panels = await db.get_panels()
+    if not panels:
+        await callback.answer("ابتدا باید یک پنل تعریف کنید.", show_alert=True)
+        return
+    await callback.message.answer(
+        f"❓ آیا مطمئن هستید می‌خواهید کاربر {tid} را نماینده کنید؟\n\n"
+        f"پنل: {panels[0]['name']}\n"
+        f"حجم اولیه: {_MANUAL_RESELLER_DEFAULT_QUOTA_GB} GB\n"
+        f"مدت اعتبار: {_MANUAL_RESELLER_DEFAULT_DURATION_DAYS} روز\n"
+        "(این مقادیر بعداً از صفحه‌ی نماینده قابل ویرایش‌اند)",
+        reply_markup=make_reseller_confirm_inline(tid),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("uadm_mkres_yes:"))
+async def uadm_make_reseller_do(callback: CallbackQuery, is_admin: bool):
+    if not is_admin:
+        return
+    tid = int(callback.data.split(":")[1])
+    db = get_db()
+    user = await db.get_user_by_telegram_id(tid)
+    if not user:
+        await callback.answer("کاربر پیدا نشد", show_alert=True)
+        await callback.message.delete()
+        return
+    if await db.get_reseller_by_user_id(user["id"]):
+        await callback.answer("این کاربر از قبل نماینده است.", show_alert=True)
+        await callback.message.delete()
+        return
+    panels = await db.get_panels()
+    if not panels:
+        await callback.answer("ابتدا باید یک پنل تعریف کنید.", show_alert=True)
+        await callback.message.delete()
+        return
+
+    expires_at = int(time.time()) + _MANUAL_RESELLER_DEFAULT_DURATION_DAYS * 86400
+    reseller_id = await db.create_or_renew_reseller(
+        user["id"], None, panels[0]["id"], _MANUAL_RESELLER_DEFAULT_QUOTA_GB, expires_at,
+    )
+
+    await callback.message.delete()
+    await callback.answer("✅ کاربر نماینده شد.")
+    try:
+        await callback.bot.send_message(
+            tid, "🤝 حساب شما توسط ادمین به نمایندگی ارتقا یافت. برای مشاهده‌ی پنل نمایندگی از منوی ربات اقدام کنید.",
+        )
+    except Exception:
+        pass
+
+    reseller = await db.get_reseller(reseller_id)
+    text = await _reseller_detail_text(db, reseller)
+    await callback.message.answer(text, reply_markup=reseller_admin_detail_inline(reseller))
+
+
+@router.callback_query(F.data.startswith("uadm_mkres_no:"))
+async def uadm_make_reseller_cancel(callback: CallbackQuery, is_admin: bool):
+    if not is_admin:
+        return
+    await callback.message.delete()
+    await callback.answer("انصراف داده شد.")
 
 
 @router.callback_query(F.data.startswith("uadm_msg:"))
