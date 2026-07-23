@@ -178,11 +178,42 @@ def admin_user_detail(request: HttpRequest, telegram_id: int):
         elif action == "unban":
             bot_db.set_user_banned(user["id"], False)
             messages.success(request, "کاربر آن‌بن شد.")
+        elif action == "make_reseller":
+            existing = bot_db.get_reseller_by_user_id(user["id"])
+            if existing:
+                messages.warning(request, "این کاربر از قبل نماینده است.")
+            else:
+                try:
+                    panel_id = int(request.POST.get("panel_id", 0))
+                    quota_gb = float(request.POST.get("quota_gb", "").strip())
+                    duration_days = int(request.POST.get("duration_days", "0") or 0)
+                except (TypeError, ValueError):
+                    panel_id, quota_gb, duration_days = 0, 0, 0
+
+                panel = bot_db.get_panel(panel_id) if panel_id else None
+                if not panel:
+                    messages.error(request, "پنل انتخاب‌شده معتبر نیست.")
+                elif quota_gb <= 0:
+                    messages.error(request, "حجم نماینده باید بزرگ‌تر از صفر باشد.")
+                else:
+                    expires_at = int(time.time()) + duration_days * 86400 if duration_days > 0 else 0
+                    reseller_id = bot_db.create_reseller_manual(
+                        user["id"], panel_id, quota_gb, expires_at,
+                    )
+                    telegram_api.send_message(
+                        int(user["telegram_id"]),
+                        "🤝 حساب شما توسط ادمین به نمایندگی ارتقا یافت. برای مشاهده‌ی پنل نمایندگی به ربات مراجعه کنید.",
+                    )
+                    messages.success(request, "کاربر با موفقیت نماینده شد. به کاربر اطلاع داده شد.")
+                    return redirect("panel:admin_reseller_detail", reseller_id=reseller_id)
         return redirect("panel:admin_user_detail", telegram_id=telegram_id)
 
     user = bot_db.get_user_by_telegram_id(telegram_id)
+    reseller = bot_db.get_reseller_by_user_id(user["id"])
+    panels = bot_db.get_panels(active_only=True)
     return render(request, "admin/user_detail.html", {
         "u": user, "subscriptions": subscriptions, "is_admin": True,
+        "reseller": reseller, "panels": panels,
     })
 
 

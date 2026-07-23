@@ -336,6 +336,25 @@ def get_all_resellers() -> list[dict]:
     return rows_to_list(rows)
 
 
+def create_reseller_manual(user_id: int, panel_id: int, quota_gb: float, expires_at: int) -> int:
+    """تبدیل دستی یک کاربر عادی به نماینده توسط ادمین (بدون عبور از
+    فرآیند خرید پلن). اگر کاربر از قبل نماینده باشد، رکورد موجود
+    برگردانده می‌شود و تغییری در آن اعمال نمی‌شود — حذف/ویرایش نماینده‌ی
+    موجود باید صریحاً و جداگانه از صفحه‌ی مدیریت نماینده‌ها انجام شود."""
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM resellers WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        cur = conn.execute(
+            "INSERT INTO resellers (user_id, plan_id, panel_id, quota_gb, expires_at, status) "
+            "VALUES (?, NULL, ?, ?, ?, 'active')",
+            (user_id, panel_id, quota_gb, expires_at),
+        )
+        return cur.lastrowid
+
+
 def set_reseller_status(reseller_id: int, status: str):
     with get_conn() as conn:
         conn.execute("UPDATE resellers SET status=? WHERE id=?", (status, reseller_id))

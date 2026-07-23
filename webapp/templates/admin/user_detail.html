@@ -63,8 +63,72 @@
         </button>
       {% endif %}
     </form>
+
+    <div class="divider"></div>
+
+    {% if reseller %}
+      <a href="{% url 'panel:admin_reseller_detail' reseller.id %}" class="btn btn-glass w-full">
+        <i class="fa fa-user-tie"></i> این کاربر نماینده است — مشاهده پنل نمایندگی
+      </a>
+    {% else %}
+      <button type="button" class="btn btn-glass w-full" onclick="openMakeResellerModal()">
+        <i class="fa fa-user-tie"></i> تبدیل به نماینده
+      </button>
+    {% endif %}
   </div>
 </div>
+
+{% if not reseller %}
+<div class="modal-overlay" id="make-reseller-modal">
+  <div class="modal-box">
+    <h3><i class="fa fa-triangle-exclamation" style="color: var(--orange);"></i> تبدیل کاربر به نماینده</h3>
+    <p class="meta">
+      آیا مطمئن هستید می‌خواهید کاربر «{{ u.full_name|default:u.telegram_id }}» را نماینده کنید؟
+      این کار یک پنل نمایندگی جدید برای او فعال می‌کند و به او در ربات اطلاع داده می‌شود.
+    </p>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="make_reseller"/>
+
+      <div class="form-group">
+        <label>پنل</label>
+        <select name="panel_id" class="input" required>
+          {% for p in panels %}
+          <option value="{{ p.id }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>حجم نمایندگی (GB)</label>
+        <input type="number" name="quota_gb" class="input" value="50" min="1" step="0.1" required/>
+      </div>
+
+      <div class="form-group">
+        <label>مدت اعتبار (روز) — صفر یعنی نامحدود</label>
+        <input type="number" name="duration_days" class="input" value="30" min="0"/>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-glass" onclick="closeMakeResellerModal()">انصراف</button>
+        <button type="submit" class="btn btn-glass-primary"><i class="fa fa-check"></i> بله، نماینده کن</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openMakeResellerModal() {
+  document.getElementById('make-reseller-modal').classList.add('is-open');
+}
+function closeMakeResellerModal() {
+  document.getElementById('make-reseller-modal').classList.remove('is-open');
+}
+document.getElementById('make-reseller-modal').addEventListener('click', function (e) {
+  if (e.target === this) closeMakeResellerModal();
+});
+</script>
+{% endif %}
 
 <!-- سرویس‌ها -->
 <div class="card mt-3">
