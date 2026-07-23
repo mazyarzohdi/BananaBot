@@ -83,6 +83,12 @@
 {% endif %}
 
 <div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-plug"></i> دسترسی API</h2>
+  <p class="meta">می‌توانید از طریق API با کلید اختصاصی خودتان، به‌صورت خودکار (مثلاً از داخل ربات تلگرامی خودتان) کانفیگ بسازید.</p>
+  <a href="{% url 'panel:reseller_api_keys' %}" class="btn btn-sm btn-primary"><i class="fa fa-key"></i> مدیریت کلیدهای API</a>
+</div>
+
+<div class="card mt-3">
   <h2 class="card-title"><i class="fa fa-server"></i> کانفیگ‌های من ({{ configs|length }})</h2>
 
   {% if configs %}
@@ -94,6 +100,7 @@
           {% elif c.status == "disabled" %}<span class="badge-orange">غیرفعال موقت</span>
           {% else %}<span class="badge-red">{{ c.status }}</span>{% endif %}
           {{ c.label|default:c.email }}
+          {% if c.source == "api" %}<span class="badge-purple" title="ساخته‌شده از طریق API">API</span>{% endif %}
         </div>
         <div class="meta">{{ c.volume_gb }} GB</div>
       </div>

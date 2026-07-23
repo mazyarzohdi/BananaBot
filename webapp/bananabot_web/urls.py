@@ -11,4 +11,5 @@ WEB_PATH = os.environ.get("WEB_PATH", "/panel").strip("/")
 
 urlpatterns = [
     path(f"{WEB_PATH}/", include("panel.urls")),
+    path(f"{WEB_PATH}/api/v1/", include("panel.api.urls")),
 ]

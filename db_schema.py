@@ -194,8 +194,56 @@ CREATE TABLE IF NOT EXISTS reseller_configs (
     sub_link TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     consumed_gb REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'panel',
+    api_key_id INTEGER DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (reseller_id) REFERENCES resellers(id)
+);
+
+-- کلیدهای API نمایندگان. راز واقعی کلید هرگز ذخیره نمی‌شود؛ فقط هش آن
+-- (key_hash) برای مقایسه نگه داشته می‌شود. key_id بخش عمومی/غیرمحرمانه‌ی
+-- کلید است که برای جستجوی سریع در دیتابیس استفاده می‌شود.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reseller_id INTEGER NOT NULL,
+    key_id TEXT UNIQUE NOT NULL,
+    key_hash TEXT NOT NULL,
+    label TEXT DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_used_at TEXT DEFAULT NULL,
+    last_used_ip TEXT DEFAULT '',
+    revoked_at TEXT DEFAULT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (reseller_id) REFERENCES resellers(id)
+);
+
+-- Nonce های مصرف‌شده برای هر کلید API، جهت جلوگیری از Replay Attack.
+-- هر (api_key_id, nonce) فقط یک‌بار می‌تواند ثبت شود.
+CREATE TABLE IF NOT EXISTS api_nonces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id INTEGER NOT NULL,
+    nonce TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(api_key_id, nonce),
+    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+);
+
+-- لاگ کامل هر درخواست API (موفق یا ناموفق) برای ممیزی امنیتی و
+-- Rate Limiting. رکورد حتی برای درخواست‌های ردشده (401/403/429) هم ثبت
+-- می‌شود.
+CREATE TABLE IF NOT EXISTS api_request_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id INTEGER,
+    reseller_id INTEGER,
+    endpoint TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    error_code TEXT DEFAULT '',
+    ip TEXT DEFAULT '',
+    user_agent TEXT DEFAULT '',
+    duration_ms INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS faq (
@@ -465,6 +513,19 @@ def reconcile(db_path: str) -> dict:
             )
         except sqlite3.OperationalError:
             pass
+
+        # ایندکس‌های کمکی برای API نمایندگان: جستجوی سریع کلید، پاک‌سازی/چک
+        # nonce، و شمارش پنجره‌ای درخواست‌ها برای Rate Limiting.
+        for idx_stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_reseller ON api_keys(reseller_id)",
+            "CREATE INDEX IF NOT EXISTS idx_api_nonces_key_created ON api_nonces(api_key_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_api_request_log_key_created ON api_request_log(api_key_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_api_request_log_endpoint_created ON api_request_log(api_key_id, endpoint, created_at)",
+        ):
+            try:
+                conn.execute(idx_stmt)
+            except sqlite3.OperationalError:
+                pass
 
         for key, value in DEFAULT_SETTINGS.items():
             cur = conn.execute(

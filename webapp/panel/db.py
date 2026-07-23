@@ -403,8 +403,8 @@ def add_reseller_config(**data) -> int:
         cur = conn.execute(
             "INSERT INTO reseller_configs "
             "(reseller_id, label, email, sub_id, volume_gb, expiry_time, "
-            "config_link, config_links, sub_link, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "config_link, config_links, sub_link, status, source, api_key_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["reseller_id"],
                 data.get("label", ""),
@@ -416,6 +416,8 @@ def add_reseller_config(**data) -> int:
                 data.get("config_links", "[]"),
                 data.get("sub_link", ""),
                 data.get("status", "active"),
+                data.get("source", "panel"),
+                data.get("api_key_id"),
             ),
         )
         return cur.lastrowid
@@ -594,3 +596,160 @@ def get_revenue_stats() -> dict:
         "computed_total": computed_total,
         "adjustment": adjustment,
     }
+
+
+# ── Reseller API keys ─────────────────────────────────────────────────────────
+
+def create_api_key(reseller_id: int, key_id: str, key_hash: str, label: str = "") -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO api_keys (reseller_id, key_id, key_hash, label) VALUES (?, ?, ?, ?)",
+            (reseller_id, key_id, key_hash, label),
+        )
+        return cur.lastrowid
+
+
+def get_api_key_by_key_id(key_id: str) -> dict | None:
+    """برای احراز هویت درخواست‌های API: کلید را همراه با اطلاعات کامل
+    نماینده و پنل مرتبط برمی‌گرداند تا تمام چک‌های امنیتی (وضعیت، انقضا،
+    سهمیه) بدون کوئری اضافه انجام شود."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT ak.*, r.user_id as reseller_user_id, r.quota_gb, r.expires_at as reseller_expires_at, "
+            "r.status as reseller_status, r.panel_id, u.telegram_id as telegram_id, "
+            "pn.url as panel_url, pn.api_token as api_token, pn.inbound_ids, "
+            "pn.sub_link_template, pn.on_hold, pn.is_active as panel_is_active "
+            "FROM api_keys ak "
+            "JOIN resellers r ON ak.reseller_id = r.id "
+            "JOIN users u ON r.user_id = u.id "
+            "JOIN panels pn ON r.panel_id = pn.id "
+            "WHERE ak.key_id = ?",
+            (key_id,),
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def list_api_keys(reseller_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, key_id, label, is_active, last_used_at, last_used_ip, revoked_at, created_at "
+            "FROM api_keys WHERE reseller_id = ? ORDER BY id DESC",
+            (reseller_id,),
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def get_api_key(pk_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM api_keys WHERE id = ?", (pk_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def revoke_api_key(pk_id: int, reseller_id: int) -> bool:
+    """فقط کلید متعلق به همین نماینده را غیرفعال می‌کند (rowcount اتمیک
+    تضمین می‌کند نماینده‌ی دیگری نتواند کلید این یکی را باطل کند)."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE api_keys SET is_active = 0, revoked_at = datetime('now') "
+            "WHERE id = ? AND reseller_id = ? AND is_active = 1",
+            (pk_id, reseller_id),
+        )
+        return cur.rowcount > 0
+
+
+def touch_api_key_usage(pk_id: int, ip: str = ""):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = datetime('now'), last_used_ip = ? WHERE id = ?",
+            (ip, pk_id),
+        )
+
+
+def count_active_api_keys(reseller_id: int) -> int:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM api_keys WHERE reseller_id = ? AND is_active = 1",
+            (reseller_id,),
+        ).fetchone()[0]
+
+
+# ── API replay protection (nonces) ───────────────────────────────────────────
+
+def check_and_consume_nonce(api_key_id: int, nonce: str) -> bool:
+    """اگر nonce برای این کلید تازه باشد آن را ثبت کرده و True برمی‌گرداند؛
+    اگر قبلاً استفاده شده باشد (تلاش برای Replay) False برمی‌گرداند. با
+    تکیه بر محدودیت UNIQUE(api_key_id, nonce) در دیتابیس، این عملیات حتی
+    زیر بار همزمان هم اتمیک و امن است."""
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO api_nonces (api_key_id, nonce) VALUES (?, ?)",
+                (api_key_id, nonce),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def cleanup_old_nonces(older_than_seconds: int = 900):
+    """پاک‌سازی nonce های قدیمی‌تر از پنجره‌ی زمانی معتبر، تا جدول رشد
+    نامحدود پیدا نکند. صرفاً یک بهینه‌سازی نگهداشتی است؛ صحتِ چک replay به
+    آن وابسته نیست."""
+    with get_conn() as conn:
+        conn.execute(
+            f"DELETE FROM api_nonces WHERE created_at < datetime('now', '-{int(older_than_seconds)} seconds')"
+        )
+
+
+def cleanup_old_api_logs(older_than_seconds: int):
+    """پاک‌سازی اختیاری لاگ‌های قدیمی درخواست‌های API (برای کنترل حجم
+    دیتابیس در دیپلوی‌های پرترافیک). با فراخوانی صریح از مدیریت اجرا
+    می‌شود؛ به‌صورت پیش‌فرض هیچ لاگی خودکار حذف نمی‌شود."""
+    with get_conn() as conn:
+        conn.execute(
+            f"DELETE FROM api_request_log WHERE created_at < datetime('now', '-{int(older_than_seconds)} seconds')"
+        )
+
+
+# ── API request log / rate limiting ──────────────────────────────────────────
+
+def log_api_request(
+    api_key_id: int | None, reseller_id: int | None, endpoint: str, method: str, path: str,
+    status_code: int, error_code: str = "", ip: str = "", user_agent: str = "", duration_ms: int = 0,
+):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO api_request_log "
+            "(api_key_id, reseller_id, endpoint, method, path, status_code, error_code, ip, user_agent, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (api_key_id, reseller_id, endpoint, method, path, status_code, error_code, ip, user_agent[:255], duration_ms),
+        )
+
+
+def count_recent_requests(api_key_id: int, window_seconds: int, endpoint: str | None = None) -> int:
+    """شمارش درخواست‌های این کلید در N ثانیه‌ی اخیر، برای Rate Limiting.
+    اگر endpoint داده شود، فقط همان دسته از درخواست‌ها شمرده می‌شود
+    (مثلاً محدودیت سخت‌گیرانه‌تر روی ساخت کانفیگ نسبت به کل API)."""
+    with get_conn() as conn:
+        if endpoint:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM api_request_log "
+                "WHERE api_key_id = ? AND endpoint = ? AND created_at >= datetime('now', ?)",
+                (api_key_id, endpoint, f"-{int(window_seconds)} seconds"),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM api_request_log "
+                "WHERE api_key_id = ? AND created_at >= datetime('now', ?)",
+                (api_key_id, f"-{int(window_seconds)} seconds"),
+            ).fetchone()
+    return row[0] if row else 0
+
+
+def get_api_logs(reseller_id: int, limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM api_request_log WHERE reseller_id = ? ORDER BY id DESC LIMIT ?",
+            (reseller_id, limit),
+        ).fetchall()
+    return rows_to_list(rows)

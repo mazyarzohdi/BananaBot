@@ -203,6 +203,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 .badge-red    { background: rgba(239,68,68,.15);  color: var(--danger);  padding: 3px 10px; border-radius: 20px; font-size: 12px; }
 .badge-orange { background: rgba(249,115,22,.15); color: var(--orange);  padding: 3px 10px; border-radius: 20px; font-size: 12px; }
 .badge-gray   { background: var(--bg3); color: var(--text-muted); padding: 3px 10px; border-radius: 20px; font-size: 12px; }
+.badge-purple { background: rgba(168,85,247,.15); color: #a855f7; padding: 3px 10px; border-radius: 20px; font-size: 12px; margin-inline-start: 6px; }
 
 /* ── Alerts ───────────────────────────────────────────────────────────────── */
 .messages { padding: 0 24px; }
@@ -348,6 +349,8 @@ code { background: var(--bg3); padding: 2px 6px; border-radius: 4px; font-size: 
 .config-card-title { font-weight: 600; font-size: 14px; }
 .config-form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .config-form-row .input { max-width: 140px; }
+.form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.code-box { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 13px; overflow-x: auto; }
 .locked-banner {
   background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.25); color: var(--danger);
   padding: 14px; border-radius: var(--radius); margin-bottom: 16px; display: flex; align-items: center; gap: 10px;

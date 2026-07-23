@@ -18,6 +18,7 @@ urlpatterns = [
     path("buy/",      views.user_buy,      name="user_buy"),
     path("wallet/",   views.user_wallet,   name="user_wallet"),
     path("reseller/", views.reseller_panel, name="reseller_panel"),
+    path("reseller/api-keys/", views.reseller_api_keys, name="reseller_api_keys"),
 
     # Admin — users
     path("admin/users/",                      views.admin_users,       name="admin_users"),

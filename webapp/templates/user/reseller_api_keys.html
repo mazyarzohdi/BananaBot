@@ -1,0 +1,116 @@
+{% extends "shared/base.html" %}
+{% block title %}کلیدهای API نمایندگی{% endblock %}
+{% block page_title %}کلیدهای API نمایندگی{% endblock %}
+{% block nav_reseller %}active{% endblock %}
+{% block content %}
+
+<div class="card-toolbar">
+  <a href="{% url 'panel:reseller_panel' %}" class="btn btn-ghost"><i class="fa fa-arrow-right"></i> بازگشت به پنل نمایندگی</a>
+</div>
+
+{% if new_raw_key %}
+<div class="card mt-3" style="border: 1px solid var(--orange);">
+  <h2 class="card-title"><i class="fa fa-triangle-exclamation"></i> کلید جدید شما</h2>
+  <p class="meta">این کلید فقط همین یک‌بار نمایش داده می‌شود و بعد از خروج از این صفحه دیگر قابل بازیابی نیست. آن را همین حالا در جای امنی کپی و ذخیره کنید.</p>
+  <div class="code-box" style="display:flex; align-items:center; gap:8px; direction:ltr; text-align:left;">
+    <code id="new-api-key" style="user-select:all; word-break:break-all;">{{ new_raw_key }}</code>
+    <button type="button" class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('new-api-key').textContent)">
+      <i class="fa fa-copy"></i> کپی
+    </button>
+  </div>
+</div>
+{% endif %}
+
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-key"></i> ساخت کلید جدید</h2>
+  <form method="post" class="form-row">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="create_key"/>
+    <input type="text" name="label" class="input" placeholder="برچسب (مثلاً: ربات تلگرام من)" maxlength="100"/>
+    <button type="submit" class="btn btn-primary"><i class="fa fa-plus"></i> ساخت کلید</button>
+  </form>
+  <p class="meta mt-2">حداکثر ۱۰ کلید فعال هم‌زمان مجاز است. هر کلید مستقل قابل باطل‌کردن است، بدون آنکه روی بقیه اثر بگذارد.</p>
+</div>
+
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-list"></i> کلیدهای فعلی ({{ keys|length }})</h2>
+  {% if keys %}
+  <table class="table">
+    <thead>
+      <tr><th>برچسب</th><th>شناسه کلید</th><th>وضعیت</th><th>آخرین استفاده</th><th>تاریخ ساخت</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for k in keys %}
+      <tr>
+        <td>{{ k.label|default:"—" }}</td>
+        <td style="direction:ltr; text-align:left;"><code>bb_{{ k.key_id|slice:":8" }}********</code></td>
+        <td>
+          {% if k.is_active %}<span class="badge-green">فعال</span>{% else %}<span class="badge-red">باطل‌شده</span>{% endif %}
+        </td>
+        <td>{{ k.last_used_at|default:"هنوز استفاده نشده" }}</td>
+        <td>{{ k.created_at }}</td>
+        <td>
+          {% if k.is_active %}
+          <form method="post" onsubmit="return confirm('این کلید باطل شود؟ این کار غیرقابل بازگشت است.')">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="revoke_key"/>
+            <input type="hidden" name="key_pk" value="{{ k.id }}"/>
+            <button type="submit" class="btn btn-sm btn-danger"><i class="fa fa-ban"></i> باطل کردن</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-card">
+    <i class="fa fa-key fa-3x"></i>
+    <p>هنوز کلید API‌ای نساخته‌اید.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-code"></i> نحوه‌ی استفاده</h2>
+  <p class="meta">آدرس پایه‌ی API شما:</p>
+  <div class="code-box" style="direction:ltr; text-align:left;"><code>{{ api_base_url }}</code></div>
+  <p class="meta mt-2">
+    هر درخواست باید هدر <code>Authorization: Bearer &lt;کلید&gt;</code> و برای درخواست‌های POST/PATCH/DELETE
+    هدرهای <code>X-Timestamp</code> و <code>X-Nonce</code> را نیز داشته باشد. مستندات کامل API را از ادمین
+    درخواست کنید یا فایل <code>API_DOCUMENTATION.md</code> را ببینید.
+  </p>
+</div>
+
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-clock-rotate-left"></i> آخرین فعالیت API</h2>
+  {% if logs %}
+  <table class="table">
+    <thead>
+      <tr><th>زمان</th><th>Endpoint</th><th>متد</th><th>وضعیت</th><th>خطا</th></tr>
+    </thead>
+    <tbody>
+      {% for l in logs %}
+      <tr>
+        <td>{{ l.created_at }}</td>
+        <td>{{ l.endpoint }}</td>
+        <td>{{ l.method }}</td>
+        <td>
+          {% if l.status_code < 300 %}<span class="badge-green">{{ l.status_code }}</span>
+          {% elif l.status_code < 500 %}<span class="badge-orange">{{ l.status_code }}</span>
+          {% else %}<span class="badge-red">{{ l.status_code }}</span>{% endif %}
+        </td>
+        <td>{{ l.error_code|default:"—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-card">
+    <i class="fa fa-clock-rotate-left fa-3x"></i>
+    <p>هنوز درخواستی از طریق API ثبت نشده.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
