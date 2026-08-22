@@ -56,6 +56,7 @@ TEXTS = {
     "admin_tutorials": "📖 مدیریت آموزش‌ها",
     "admin_coupons": "🎟 مدیریت کوپن‌ها",
     "admin_broadcast": "📢 ارسال همگانی",
+    "admin_referral_broadcast": "📣 ارسال همگانی رفرال",
     "reseller_panel": "🤝 پنل نمایندگی",
     "admin_reseller": "🤝 مدیریت نمایندگی",
     "admin_tickets": "🎫 تیکت‌های پشتیبانی",

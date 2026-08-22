@@ -327,6 +327,13 @@ DEFAULT_SETTINGS = {
     # یا "fixed" (مبلغ ثابت به ازای هر خرید کاربر معرفی‌شده).
     "referral_reward_type": "percent",
     "referral_reward_value": "0",
+    "referral_broadcast_text": (
+        "سلام خوبی؟\n"
+        "من یه مدته از اینجا فیلترشکن میگیرم خیلی راضیم 😊\n"
+        "تو هم اگه خواستی میتونی از این ربات سرویس بگیری.\n\n"
+        "برای خرید فیلترشکن با ۲۰ درصد تخفیف بزن رو لینک زیر! 🎉\n"
+        "👉 {link}"
+    ),
     "backup_schedule_enabled": "0",
     "backup_schedule_interval_hours": "24",
     "backup_schedule_retention_count": "14",

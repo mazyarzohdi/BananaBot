@@ -50,9 +50,17 @@ def admin_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=t("admin_faq")), KeyboardButton(text=t("admin_tutorials"))],
         [KeyboardButton(text=t("admin_coupons")), KeyboardButton(text=t("admin_broadcast"))],
         [KeyboardButton(text=t("admin_reseller")), KeyboardButton(text=t("admin_tickets"))],
+        [KeyboardButton(text=t("admin_referral_broadcast"))],
         [KeyboardButton(text=t("back"))],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def referral_broadcast_confirm_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 تأیید و شروع ارسال همگانی", callback_data="ref_bcast:confirm")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data="ref_bcast:cancel")],
+    ])
 
 
 def cancel_kb() -> ReplyKeyboardMarkup:

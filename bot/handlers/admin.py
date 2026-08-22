@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -58,6 +58,7 @@ from bot.keyboards import (
     user_admin_card_inline,
     user_admin_card_inline_with_back,
     users_list_inline,
+    referral_broadcast_confirm_inline,
 )
 from bot.messages import t
 from config import get_settings
@@ -1923,6 +1924,183 @@ async def broadcast_send(message: Message, state: FSMContext):
     await message.answer(f"✅ ارسال شد: {ok} | ❌ ناموفق: {fail}", reply_markup=admin_menu())
 
 
+# --- Referral Broadcast ---
+DEFAULT_REFERRAL_BROADCAST_TEXT = (
+    "سلام خوبی؟\n"
+    "من یه مدته از اینجا فیلترشکن میگیرم خیلی راضیم \n"
+    "تو هم اگه خواستی میتونی از این ربات کانفیگ بگیری.\n\n"
+    "برای خرید فیلترشکن با ۲۰ درصد تخفیف بزن رو لینک زیر! 🎉\n"
+    "👉 {link}"
+)
+
+
+@router.message(F.text == t("admin_referral_broadcast"))
+@admin_only
+async def referral_broadcast_start(message: Message):
+    db = get_db()
+    if await db.get_setting("referral_enabled", "0") != "1":
+        await message.answer("⚠️ سیستم معرفی (رفرال) در حال حاضر در تنظیمات غیرفعال است.")
+        return
+
+    me = await message.bot.get_me()
+    bot_username = me.username or ""
+
+    reward_type = await db.get_setting("referral_reward_type", "percent")
+    reward_value_raw = await db.get_setting("referral_reward_value", "0")
+    try:
+        reward_value_num = float(reward_value_raw or "0")
+    except ValueError:
+        reward_value_num = 0
+
+    if reward_type == "fixed":
+        reward_desc = f"{int(reward_value_num):,} تومان"
+    else:
+        reward_desc = f"{reward_value_num:g}٪"
+
+    promo_template = await db.get_setting("referral_broadcast_text", DEFAULT_REFERRAL_BROADCAST_TEXT)
+    sample_link = f"https://t.me/{bot_username}?start=ref_SAMPLE"
+    if "{link}" in promo_template:
+        sample_promo = promo_template.replace("{link}", sample_link)
+    else:
+        sample_promo = f"{promo_template}\n\n👉 {sample_link}"
+
+    sample_reply = (
+        "پیام بالا حاوی لینک زیرمجموعه گیری شماست\n"
+        f"با ارسال این پیام به دوستانتون و ورود اونها در ربات، {reward_desc} از مبلغ خریدشون به کیف پول شما اضافه میشه 💰\n\n"
+        f"🔗 لینک شما:\n{sample_link}\n"
+        "🫂 زیرمجموعه های شما: 0\n"
+        "💰 درآمد شما: 0 تومان"
+    )
+
+    users_count_row = await db._fetchone("SELECT COUNT(*) as c FROM users")
+    total_users = users_count_row["c"] if users_count_row else 0
+
+    preview_text = (
+        "📣 **ارسال همگانی لینک رفرال اختصاصی برای تمام کاربران**\n\n"
+        f"👥 تعداد کل کاربران: **{total_users} نفر**\n\n"
+        "▫️ **پیش‌نمایش پیام اول (تبلیغاتی):**\n"
+        "────────────────────\n"
+        f"{sample_promo}\n"
+        "────────────────────\n\n"
+        "▫️ **پیش‌نمایش پیام دوم (ریپلای روی پیام بالا با اطلاعات زیرمجموعه):**\n"
+        "────────────────────\n"
+        f"{sample_reply}\n"
+        "────────────────────\n\n"
+        "⚠️ آیا از شروع ارسال همگانی رفرال برای تمامی کاربران اطمینان دارید؟"
+    )
+
+    await message.answer(preview_text, reply_markup=referral_broadcast_confirm_inline())
+
+
+@router.callback_query(F.data == "ref_bcast:cancel")
+@admin_only
+async def referral_broadcast_cancel(callback: CallbackQuery):
+    await callback.message.edit_text(t("operation_cancelled"))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ref_bcast:confirm")
+@admin_only
+async def referral_broadcast_confirm(callback: CallbackQuery):
+    await callback.answer("🚀 ارسال همگانی رفرال آغاز شد...", show_alert=False)
+    db = get_db()
+    users = await db._fetchall("SELECT id, telegram_id FROM users")
+    total = len(users)
+
+    me = await callback.bot.get_me()
+    bot_username = me.username or ""
+
+    reward_type = await db.get_setting("referral_reward_type", "percent")
+    reward_value_raw = await db.get_setting("referral_reward_value", "0")
+    try:
+        reward_value_num = float(reward_value_raw or "0")
+    except ValueError:
+        reward_value_num = 0
+
+    if reward_type == "fixed":
+        reward_desc = f"{int(reward_value_num):,} تومان"
+    else:
+        reward_desc = f"{reward_value_num:g}٪"
+
+    promo_template = await db.get_setting("referral_broadcast_text", DEFAULT_REFERRAL_BROADCAST_TEXT)
+
+    ok, fail, blocked = 0, 0, 0
+    progress_msg = await callback.message.edit_text(f"⏳ در حال ارسال لینک‌های رفرال... 0 / {total}")
+
+    for i, u in enumerate(users, start=1):
+        try:
+            ref_code = await db.get_or_create_referral_code(u["id"])
+            link = f"https://t.me/{bot_username}?start=ref_{ref_code}"
+            stats = await db.get_referral_stats(u["id"])
+
+            if "{link}" in promo_template:
+                promo_text = promo_template.replace("{link}", link)
+            else:
+                promo_text = f"{promo_template}\n\n👉 {link}"
+
+            reply_text = (
+                "پیام بالا حاوی لینک زیرمجموعه گیری شماست\n"
+                f"با ارسال این پیام به دوستانتون و ورود اونها در ربات، {reward_desc} از مبلغ خریدشون به کیف پول شما اضافه میشه 💰\n\n"
+                f"🔗 لینک شما:\n{link}\n"
+                f"🫂 زیرمجموعه های شما: {stats['referred_count']}\n"
+                f"💰 درآمد شما: {stats['total_earned']:,} تومان"
+            )
+
+            sent = False
+            for attempt in range(3):
+                try:
+                    msg1 = await callback.bot.send_message(u["telegram_id"], promo_text)
+                    await callback.bot.send_message(
+                        u["telegram_id"],
+                        reply_text,
+                        reply_to_message_id=msg1.message_id,
+                    )
+                    ok += 1
+                    sent = True
+                    break
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after)
+                    continue
+                except TelegramForbiddenError:
+                    blocked += 1
+                    sent = True
+                    break
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "blocked" in err_str or "deactivated" in err_str or "chat not found" in err_str:
+                        blocked += 1
+                    else:
+                        fail += 1
+                    sent = True
+                    break
+            if not sent:
+                fail += 1
+        except Exception:
+            fail += 1
+
+        await asyncio.sleep(0.05)
+        if i % 25 == 0 or i == total:
+            try:
+                await progress_msg.edit_text(
+                    f"⏳ در حال ارسال لینک رفرال... {i} / {total}\n"
+                    f"✅ موفق: {ok} | 🚫 بلاک/غیرفعال: {blocked} | ❌ خطا: {fail}"
+                )
+            except Exception:
+                pass
+
+    final_report = (
+        "📣 **گزارش نهایی ارسال همگانی لینک رفرال**\n\n"
+        f"👥 کل کاربران: {total} نفر\n"
+        f"✅ ارسال موفق: {ok} نفر\n"
+        f"🚫 بلاک کرده / غیرفعال: {blocked} نفر\n"
+        f"❌ ناموفق / خطای دیگر: {fail} نفر"
+    )
+    try:
+        await progress_msg.edit_text(final_report)
+    except Exception:
+        await callback.message.answer(final_report)
+
+
 # ─── Settings ────────────────────────────────────────────────────────────────
 
 # دکمه‌های آماده برای کلیدهای دوحالته (روشن/خاموش)
@@ -1963,6 +2141,10 @@ _SETTINGS_META = {
     "referral_reward_value": {
         "label": "🤝 مقدار پاداش معرفی",
         "hint": "اگر نوع پاداش «درصدی» است: عددی بین 1 تا 100 وارد کنید (درصدی از مبلغ هر خرید کاربر معرفی‌شده). اگر «مبلغ ثابت» است: مبلغی به تومان وارد کنید که به ازای هر خرید کاربر معرفی‌شده به کیف پول معرف واریز می‌شود. 0 = بدون پاداش.",
+    },
+    "referral_broadcast_text": {
+        "label": "📣 متن تبلیغاتی ارسال همگانی رفرال",
+        "hint": "متن پیام تبلیغاتی که در ارسال همگانی رفرال برای کاربران فرستاده می‌شود. از {link} در متن برای درج خودکار لینک اختصاصی هر کاربر استفاده کنید.",
     },
     "backup_schedule_enabled": {"label": "🗄 بکاپ خودکار زمان‌بندی‌شده", "hint": "با فعال بودن، فقط دیتابیس ربات به‌صورت خودکار بکاپ گرفته و به‌صورت بی‌صدا (بدون نوتیفیکیشن) برای همه‌ی ادمین‌ها در تلگرام ارسال می‌شود.", "type": "bool", "choices": _BOOL_CHOICES},
     "backup_schedule_interval_hours": {"label": "🗄 فاصله بکاپ خودکار (ساعت)", "hint": "هر چند ساعت یک‌بار بکاپ خودکار گرفته شود. مثال: 24 (هر روز یک‌بار)"},
