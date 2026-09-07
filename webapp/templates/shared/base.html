@@ -2,10 +2,14 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+  <meta name="theme-color" content="#080b11"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <title>{% block title %}BananaBot Panel{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   {% load static %}
   <link rel="stylesheet" href="{% static 'css/main.css' %}"/>
@@ -15,14 +19,14 @@
 <body class="{% if is_admin %}role-admin{% else %}role-user{% endif %}">
 
 <div class="layout">
-  <!-- Sidebar -->
+  <!-- Sidebar (Desktop & Slide-over on mobile) -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="logo">
         <span class="logo-icon">🍌</span>
         <span class="logo-text">BananaBot</span>
       </div>
-      <button class="sidebar-close" onclick="toggleSidebar()"><i class="fa fa-times"></i></button>
+      <button class="sidebar-close" onclick="toggleSidebar()" aria-label="بستن منو"><i class="fa fa-times"></i></button>
     </div>
 
     <div class="user-card">
@@ -34,7 +38,7 @@
       <div class="user-info">
         <div class="user-name">{{ tg_user.first_name }} {{ tg_user.last_name|default:"" }}</div>
         <div class="user-role {% if is_admin %}admin{% else %}user{% endif %}">
-          {% if is_admin %}<i class="fa fa-shield-halved"></i> ادمین{% else %}<i class="fa fa-user"></i> کاربر{% endif %}
+          {% if is_admin %}<i class="fa fa-shield-halved"></i> مدیر سیستم{% else %}<i class="fa fa-user"></i> کاربر پنل{% endif %}
         </div>
       </div>
     </div>
@@ -63,7 +67,7 @@
       {% endif %}
 
       {% if is_admin %}
-      <div class="nav-group-label">مدیریت</div>
+      <div class="nav-group-label">مدیریت کاربران و مالی</div>
       <a href="{% url 'panel:admin_users' %}" class="nav-item {% block nav_users %}{% endblock %}">
         <i class="fa fa-users"></i> کاربران
       </a>
@@ -76,13 +80,13 @@
       <a href="{% url 'panel:admin_panels' %}" class="nav-item {% block nav_panels %}{% endblock %}">
         <i class="fa fa-desktop"></i> پنل‌ها
       </a>
+      <div class="nav-group-label">نمایندگی و تنظیمات</div>
       <a href="{% url 'panel:admin_reseller_plans' %}" class="nav-item {% block nav_reseller_plans %}{% endblock %}">
         <i class="fa fa-people-arrows"></i> پلن‌های نمایندگی
       </a>
       <a href="{% url 'panel:admin_resellers' %}" class="nav-item {% block nav_admin_resellers %}{% endblock %}">
         <i class="fa fa-user-tie"></i> نمایندگان
       </a>
-      <div class="nav-group-label">تنظیمات</div>
       <a href="{% url 'panel:admin_settings' %}" class="nav-item {% block nav_settings %}{% endblock %}">
         <i class="fa fa-gear"></i> تنظیمات ربات
       </a>
@@ -91,24 +95,29 @@
 
     <div class="sidebar-footer">
       <a href="{% url 'panel:logout' %}" class="nav-item logout">
-        <i class="fa fa-right-from-bracket"></i> خروج
+        <i class="fa fa-right-from-bracket"></i> خروج از حساب
       </a>
     </div>
   </aside>
 
-  <!-- Overlay -->
+  <!-- Overlay for mobile sidebar -->
   <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 
-  <!-- Main content -->
+  <!-- Main content area -->
   <main class="main">
     <header class="topbar">
-      <button class="menu-btn" onclick="toggleSidebar()">
-        <i class="fa fa-bars"></i>
-      </button>
-      <h1 class="page-title">{% block page_title %}داشبورد{% endblock %}</h1>
+      <div class="topbar-left" style="display: flex; align-items: center; gap: 12px;">
+        <button class="menu-btn" onclick="toggleSidebar()" aria-label="منوی اصلی">
+          <i class="fa fa-bars"></i>
+        </button>
+        <h1 class="page-title">{% block page_title %}داشبورد{% endblock %}</h1>
+      </div>
       <div class="topbar-right">
         {% if db_user %}
-          <span class="balance-badge"><i class="fa fa-wallet"></i> {{ db_user.balance|default:0 }} تومان</span>
+          <a href="{% url 'panel:user_wallet' %}" class="balance-badge" style="text-decoration: none;">
+            <i class="fa fa-wallet"></i>
+            <span>{{ db_user.balance|default:0|floatformat:0 }} تومان</span>
+          </a>
         {% endif %}
       </div>
     </header>
@@ -117,8 +126,8 @@
     <div class="messages">
       {% for msg in messages %}
         <div class="alert alert-{{ msg.tags }}">
-          {{ msg }}
-          <button onclick="this.parentElement.remove()">×</button>
+          <span>{{ msg }}</span>
+          <button class="alert-close" onclick="this.parentElement.remove()" aria-label="بستن">×</button>
         </div>
       {% endfor %}
     </div>
@@ -130,11 +139,72 @@
   </main>
 </div>
 
+<!-- Mobile Bottom Navigation (Visible only on mobile/Telegram WebApp) -->
+<nav class="bottom-nav" id="bottomNav">
+  {% if not is_admin %}
+    <a href="{% url 'panel:dashboard' %}" class="bottom-nav-item">
+      <i class="fa fa-gauge"></i>
+      <span>داشبورد</span>
+    </a>
+    <a href="{% url 'panel:user_services' %}" class="bottom-nav-item">
+      <i class="fa fa-server"></i>
+      <span>سرویس‌ها</span>
+    </a>
+    <a href="{% url 'panel:user_buy' %}" class="bottom-nav-item bottom-nav-action">
+      <div class="action-btn-circle">
+        <i class="fa fa-cart-shopping"></i>
+      </div>
+      <span>خرید</span>
+    </a>
+    <a href="{% url 'panel:user_wallet' %}" class="bottom-nav-item">
+      <i class="fa fa-wallet"></i>
+      <span>کیف پول</span>
+    </a>
+    <button type="button" class="bottom-nav-item" onclick="toggleSidebar()" aria-label="بیشتر">
+      <i class="fa fa-bars"></i>
+      <span>منو</span>
+    </button>
+  {% else %}
+    <a href="{% url 'panel:dashboard' %}" class="bottom-nav-item">
+      <i class="fa fa-gauge"></i>
+      <span>داشبورد</span>
+    </a>
+    <a href="{% url 'panel:admin_users' %}" class="bottom-nav-item">
+      <i class="fa fa-users"></i>
+      <span>کاربران</span>
+    </a>
+    <a href="{% url 'panel:admin_products' %}" class="bottom-nav-item bottom-nav-action">
+      <div class="action-btn-circle">
+        <i class="fa fa-box"></i>
+      </div>
+      <span>محصولات</span>
+    </a>
+    <a href="{% url 'panel:admin_payments' %}" class="bottom-nav-item">
+      <i class="fa fa-money-bill-transfer"></i>
+      <span>پرداخت‌ها</span>
+    </a>
+    <button type="button" class="bottom-nav-item" onclick="toggleSidebar()" aria-label="منو و تنظیمات">
+      <i class="fa fa-bars"></i>
+      <span>بیشتر</span>
+    </button>
+  {% endif %}
+</nav>
+
+<!-- Toast notifications container -->
+<div class="toast-container" id="toastContainer"></div>
+
 <script src="{% static 'js/main.js' %}"></script>
 <script>
   (function () {
     var tg = window.Telegram && window.Telegram.WebApp;
-    if (tg) { tg.ready(); tg.expand(); }
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try {
+        if (tg.setHeaderColor) tg.setHeaderColor('#080b11');
+        if (tg.setBackgroundColor) tg.setBackgroundColor('#080b11');
+      } catch (e) {}
+    }
   })();
 </script>
 {% block extra_js %}{% endblock %}

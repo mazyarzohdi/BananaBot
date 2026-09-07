@@ -1,0 +1,25 @@
+# Environment and secrets
+.env
+webapp/.env
+GEMINI.md
+.agents/
+
+# SQLite Database, WAL and Backups
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backups/
+*.db
+*.sqlite3
+
+# Python virtual environment
+.venv/
+webapp/.venv/
+venv/
+env/
+
+# Python cache and logs
+__pycache__/
+*.py[cod]
+*$py.class
+*.log

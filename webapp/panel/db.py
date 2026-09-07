@@ -68,6 +68,22 @@ def get_user_by_telegram_id(telegram_id: int) -> dict | None:
     return row_to_dict(row)
 
 
+def upsert_user(telegram_id: int, username: str = "", full_name: str = "", first_name: str = "") -> dict:
+    name = full_name or first_name or "کاربر"
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO users (telegram_id, username, full_name)
+               VALUES (?, ?, ?)
+               ON CONFLICT(telegram_id) DO UPDATE SET
+               username = excluded.username,
+               full_name = excluded.full_name""",
+            (telegram_id, username, name),
+        )
+        row = conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    return row_to_dict(row)
+
+
+
 def get_users_page(page: int, per_page: int = 20, search: str = "") -> tuple[list[dict], int]:
     offset = (page - 1) * per_page
     with get_conn() as conn:
