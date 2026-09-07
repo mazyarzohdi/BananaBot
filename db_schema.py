@@ -471,13 +471,15 @@ def reconcile(db_path: str) -> dict:
                 }
                 copy_cols = [
                     c for c in
-                    ("id", "referrer_user_id", "referred_user_id", "amount", "source", "created_at")
+                    ("id", "referrer_user_id", "referred_user_id", "order_id", "amount", "source", "created_at")
                     if c in old_cols
                 ]
-                conn.execute(
-                    f"INSERT INTO referral_earnings ({', '.join(copy_cols)}) "
-                    f"SELECT {', '.join(copy_cols)} FROM referral_earnings_old"
-                )
+                if copy_cols:
+                    cols_str = ", ".join(copy_cols)
+                    conn.execute(
+                        f"INSERT INTO referral_earnings ({cols_str}) "
+                        f"SELECT {cols_str} FROM referral_earnings_old"
+                    )
                 conn.execute("DROP TABLE referral_earnings_old")
                 report.setdefault("migrated", []).append(
                     "referral_earnings: removed UNIQUE(referred_user_id) — رفرال حالا به‌ازای هر خرید پاداش می‌ده"

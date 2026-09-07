@@ -92,11 +92,12 @@ def get_users_page(page: int, per_page: int = 20, search: str = "") -> tuple[lis
     return rows_to_list(rows), total
 
 
-def update_user_balance(user_id: int, delta: int) -> int:
+def update_user_balance(user_id: int, amount: int | None = None, delta: int | None = None) -> int:
+    change = amount if amount is not None else (delta if delta is not None else 0)
     with get_conn() as conn:
         conn.execute(
             "UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?",
-            (delta, user_id),
+            (change, user_id),
         )
         row = conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)).fetchone()
     return row["balance"] if row else 0
@@ -122,11 +123,16 @@ def get_users_stats() -> dict:
 
 # ── Products ──────────────────────────────────────────────────────────────────
 
-def get_products(active_only: bool = True) -> list[dict]:
+def get_products(active_only: bool = True, trial: bool | None = None) -> list[dict]:
     with get_conn() as conn:
         q = "SELECT p.*, pn.name as panel_name FROM products p JOIN panels pn ON p.panel_id = pn.id"
+        conditions = []
         if active_only:
-            q += " WHERE p.is_active = 1"
+            conditions.append("p.is_active = 1")
+        if trial is not None:
+            conditions.append("p.is_trial = 1" if trial else "p.is_trial = 0")
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
         q += " ORDER BY p.price"
         rows = conn.execute(q).fetchall()
     return rows_to_list(rows)
@@ -142,18 +148,27 @@ def get_product(product_id: int) -> dict | None:
     return row_to_dict(row)
 
 
-def add_product(name, panel_id, volume_gb, duration_days, price, description=""):
+def add_product(
+    name: str,
+    panel_id: int,
+    volume_gb: float,
+    duration_days: int,
+    price: int,
+    is_trial: int = 0,
+    description: str = "",
+    is_active: int = 1,
+) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO products (name, panel_id, volume_gb, duration_days, price, description) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (name, panel_id, volume_gb, duration_days, price, description),
+            "INSERT INTO products (name, panel_id, volume_gb, duration_days, price, is_trial, description, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, panel_id, volume_gb, duration_days, price, is_trial, description, is_active),
         )
         return cur.lastrowid
 
 
 def update_product(product_id: int, **fields):
-    allowed = {"name", "panel_id", "volume_gb", "duration_days", "price", "is_active", "description"}
+    allowed = {"name", "panel_id", "volume_gb", "duration_days", "price", "is_trial", "is_active", "description"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
@@ -491,11 +506,25 @@ def get_payment(payment_id: int) -> dict | None:
     return row_to_dict(row)
 
 
-def create_payment(user_id: int, amount: int, payment_method: str = "card", reseller_plan_id: int | None = None) -> int:
+def create_payment(
+    user_id: int,
+    amount: int,
+    payment_method: str = "card",
+    order_id: int | None = None,
+    receipt_file_id: str | None = None,
+    product_id: int | None = None,
+    renew_sub_id: int | None = None,
+    expected_amount: int | None = None,
+    expires_at: str | None = None,
+    reseller_plan_id: int | None = None,
+) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO payments (user_id, amount, payment_method, reseller_plan_id) VALUES (?, ?, ?, ?)",
-            (user_id, amount, payment_method, reseller_plan_id),
+            "INSERT INTO payments (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, "
+            "amount, payment_method, receipt_file_id, expected_amount, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, amount, payment_method,
+             receipt_file_id, expected_amount, expires_at),
         )
         return cur.lastrowid
 

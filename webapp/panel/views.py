@@ -24,6 +24,7 @@ from . import db as bot_db
 from . import telegram_api
 from . import xui_client
 from . import reseller_core
+from .reseller_core import format_ts as _format_ts, annotate_config_usage as _annotate_config_usage
 from . import apikeys
 
 logger = logging.getLogger(__name__)
