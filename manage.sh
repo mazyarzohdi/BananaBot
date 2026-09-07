@@ -496,16 +496,28 @@ action_update() {
     fi
 
     # --- Safety backup, taken with everything stopped (quiescent DB) ---
+    local safety_dest=""
+    local had_existing_db=0
     if [[ -f "$DB_PATH" ]]; then
-        local safety_ts safety_dest
+        local safety_ts
         safety_ts=$(date +%Y%m%d_%H%M%S)
         safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-update.db"
         mkdir -p "$BACKUP_DIR"
         if _sqlite_backup_file "$DB_PATH" "$safety_dest"; then
             success "Safety copy of the current database saved to: $safety_dest"
+            had_existing_db=1
         else
-            warn "Could not take a safety copy of the database before updating — continuing anyway."
+            warn "Could not take a safety copy of the database with sqlite3 — backing up directly."
+            if cp "$DB_PATH" "$safety_dest" 2>/dev/null; then
+                had_existing_db=1
+                success "Safety copy of the current database saved to: $safety_dest"
+            else
+                warn "Could not take a safety copy of the database before updating — continuing anyway."
+            fi
         fi
+
+        # Backup to /tmp as additional emergency safeguard
+        cp "$DB_PATH" "/tmp/.bot.db.bananabot.bak" 2>/dev/null || true
 
         pre_integrity=$("$INSTALL_DIR/.venv/bin/python" -c "
 import sqlite3
@@ -524,10 +536,34 @@ finally:
     log "Fetching latest version from GitHub..."
     # پشتیبان از .env
     cp "$ENV_FILE" "/tmp/.env.bananabot.bak"
+    [[ -f "$WEBAPP_ENV" ]] && cp "$WEBAPP_ENV" "/tmp/.env.webapp.bak"
+
     git -C "$INSTALL_DIR" fetch origin >> /dev/null 2>&1
     git -C "$INSTALL_DIR" reset --hard origin/main >> /dev/null 2>&1
+
     # بازگرداندن .env
     cp "/tmp/.env.bananabot.bak" "$ENV_FILE"
+    rm -f "/tmp/.env.bananabot.bak"
+    if [[ -f "/tmp/.env.webapp.bak" ]]; then
+        cp "/tmp/.env.webapp.bak" "$WEBAPP_ENV"
+        rm -f "/tmp/.env.webapp.bak"
+    fi
+
+    # بازگرداندن دیتابیس فعال از روی نسخه بک‌آپ گرفته‌شده
+    # (جلوگیری از جایگزین شدن دیتابیس فعال با دیتابیس خام گیت‌هاب پس از git reset --hard)
+    if [[ "$had_existing_db" -eq 1 && -n "$safety_dest" && -f "$safety_dest" ]]; then
+        log "Restoring active database from pre-update backup..."
+        rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
+        cp "$safety_dest" "$DB_PATH"
+        success "Active database restored from pre-update backup."
+    elif [[ -f "/tmp/.bot.db.bananabot.bak" ]]; then
+        log "Restoring active database from temporary backup..."
+        rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
+        cp "/tmp/.bot.db.bananabot.bak" "$DB_PATH"
+        success "Active database restored from temporary backup."
+    fi
+    rm -f "/tmp/.bot.db.bananabot.bak"
+
     # به‌روزرسانی کتابخانه‌ها
     log "Updating Python libraries..."
     "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
