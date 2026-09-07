@@ -140,29 +140,29 @@ main_menu() {
     echo "   [9] 📢 Change Required Channel"
     echo "   [10] ⚙️  View Current Settings"
     echo ""
-    echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo "   [11] 🔄 Update Bot from GitHub"
-    echo "   [23] 🔧 Update THIS Management Menu (manage.sh) from GitHub"
-    echo "   [12] 🗑️  Completely Remove Bot"
-    echo ""
-    echo -e "  ${BOLD}━━━ Database ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo "   [18] 💾 Backup Database"
-    echo "   [19] ♻️  Restore Database from Backup"
-    echo "   [20] 🩺 Check / Repair Database Schema"
-    echo ""
     echo -e "  ${BOLD}━━━ Web Panel (Telegram Mini App) ━━━━━━━━━━━━━${NC}"
-    echo "   [13] ℹ️  Web Panel Status & Info"
-    echo "   [14] ▶  Start Web Panel"
-    echo "   [15] ■  Stop Web Panel"
-    echo "   [16] ↺  Restart Web Panel"
-    echo "   [17] ⚙️  Setup / Reconfigure Web Panel (domain, port, path, SSL)"
+    echo "   [11] ℹ️  Web Panel Status & Info"
+    echo "   [12] ▶  Start Web Panel"
+    echo "   [13] ■  Stop Web Panel"
+    echo "   [14] ↺  Restart Web Panel"
+    echo "   [15] ⚙️  Setup / Reconfigure Web Panel (domain, port, path, SSL)"
     echo ""
     echo -e "  ${BOLD}━━━ Auto-Payment Webhook (Bank SMS) ━━━━━━━━━━━${NC}"
-    echo "   [21] ℹ️  Webhook Status & Info"
-    echo "   [22] ↺  Restart Webhook Service"
-    echo "   [24] ■  Stop Webhook Service"
-    echo "   [25] 📜 View Webhook Live Logs"
-    echo "   [26] 📋 View Webhook Last 50 Log Lines"
+    echo "   [16] ℹ️  Webhook Status & Info"
+    echo "   [17] ↺  Restart Webhook Service"
+    echo "   [18] ■  Stop Webhook Service"
+    echo "   [19] 📜 View Webhook Live Logs"
+    echo "   [20] 📋 View Webhook Last 50 Log Lines"
+    echo ""
+    echo -e "  ${BOLD}━━━ Database ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "   [21] 💾 Backup Database"
+    echo "   [22] ♻️  Restore Database from Backup"
+    echo "   [23] 🩺 Check / Repair Database Schema"
+    echo ""
+    echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "   [24] 🔄 Update Bot from GitHub"
+    echo "   [25] 🔧 Update THIS Management Menu (manage.sh) from GitHub"
+    echo "   [26] 🗑️  Completely Remove Bot"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -622,7 +622,7 @@ EOF
         systemctl daemon-reload
         systemctl enable "$WEBHOOK_SERVICE" >> /dev/null 2>&1
         webhook_was_running=1  # brand new service — start it below along with everything else
-        success "Auto-payment webhook service created (see menu option 21 for status, and AUTO_PAYMENT_SETUP.md to configure)."
+        success "Auto-payment webhook service created (see menu option 16 for status, and AUTO_PAYMENT_SETUP.md to configure)."
     fi
 
     success "Update completed."
@@ -944,7 +944,7 @@ action_webapp_info() {
     echo -e "${BOLD}  ═══ Web Panel ═══${NC}"
     echo ""
     if [[ ! -f "$WEBAPP_ENV" ]]; then
-        warn "Web panel is not configured yet. Use option [17] to set it up."
+        warn "Web panel is not configured yet. Use option [15] to set it up."
         echo ""
         read -rp "  Press Enter to return..."
         return
@@ -980,7 +980,7 @@ action_webapp_info() {
 
 action_webapp_start() {
     if [[ ! -f "$WEBAPP_ENV" ]]; then
-        warn "Web panel is not configured yet. Use option [17] to set it up first."
+        warn "Web panel is not configured yet. Use option [15] to set it up first."
         return
     fi
     log "Starting web panel..."
@@ -1005,7 +1005,7 @@ action_webapp_stop() {
 
 action_webapp_restart() {
     if [[ ! -f "$WEBAPP_ENV" ]]; then
-        warn "Web panel is not configured yet. Use option [17] to set it up first."
+        warn "Web panel is not configured yet. Use option [15] to set it up first."
         return
     fi
     log "Restarting web panel..."
@@ -1108,27 +1108,27 @@ run() {
             8)  action_change_card ;;
             9)  action_change_channel ;;
             10) action_show_config ;;
-            11) action_update ;;
-            23) action_update_manage_script ;;
-            12) action_uninstall ;;
-            18) action_backup_db ;;
-            19) action_restore_db ;;
-            20) action_check_db_schema ;;
-            13) action_webapp_info ;;
-            14) action_webapp_start ;;
-            15) action_webapp_stop ;;
-            16) action_webapp_restart ;;
-            17) action_webapp_configure ;;
-            21) action_webhook_info ;;
-            22) action_webhook_restart ;;
-            24) action_webhook_stop ;;
-            25) action_webhook_live_log ;;
-            26) action_webhook_last_logs ;;
+            11) action_webapp_info ;;
+            12) action_webapp_start ;;
+            13) action_webapp_stop ;;
+            14) action_webapp_restart ;;
+            15) action_webapp_configure ;;
+            16) action_webhook_info ;;
+            17) action_webhook_restart ;;
+            18) action_webhook_stop ;;
+            19) action_webhook_live_log ;;
+            20) action_webhook_last_logs ;;
+            21) action_backup_db ;;
+            22) action_restore_db ;;
+            23) action_check_db_schema ;;
+            24) action_update ;;
+            25) action_update_manage_script ;;
+            26) action_uninstall ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
 
-        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "13" && "$CHOICE" != "17" && "$CHOICE" != "21" && "$CHOICE" != "25" && "$CHOICE" != "26" ]]; then
+        if [[ "$CHOICE" != "4" && "$CHOICE" != "5" && "$CHOICE" != "10" && "$CHOICE" != "11" && "$CHOICE" != "15" && "$CHOICE" != "16" && "$CHOICE" != "19" && "$CHOICE" != "20" ]]; then
             echo ""
             read -rp "  Press Enter to return to menu..."
         fi
