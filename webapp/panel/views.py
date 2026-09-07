@@ -66,25 +66,6 @@ def login_view(request: HttpRequest):
     if request.session.get("tg_user"):
         return redirect("panel:dashboard")
 
-    # Developer quick test-login for localhost testing
-    role = request.GET.get("role") or request.GET.get("as")
-    if role in ("admin", "user") or request.GET.get("dev") == "1":
-        as_role = role if role in ("admin", "user") else "admin"
-        tg_id = 999999999 if as_role == "admin" else 111111111
-        first_name = "مدیر سیستم (تست)" if as_role == "admin" else "کاربر نمونه (تست)"
-        username = "admin_test" if as_role == "admin" else "user_test"
-
-        u = bot_db.upsert_user(tg_id, first_name=first_name, username=username)
-        if as_role == "user" and u:
-            bot_db.update_user_balance(u["id"], amount=250000)
-
-        request.session["tg_user"] = {
-            "id": str(tg_id),
-            "first_name": first_name,
-            "username": username,
-        }
-        return redirect("panel:dashboard")
-
     if request.method == "GET" and "id" in request.GET:
         data = dict(request.GET)
         data = {k: v[0] if isinstance(v, list) else v for k, v in data.items()}
@@ -98,7 +79,6 @@ def login_view(request: HttpRequest):
     return render(request, "shared/login.html", {
         "bot_username": bot_username,
         "bot_token_set": bool(settings.BOT_TOKEN),
-        "dev_mode": True,
     })
 
 

