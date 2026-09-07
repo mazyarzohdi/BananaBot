@@ -92,10 +92,11 @@ class Database:
             "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
         )
 
-    async def update_user_balance(self, user_id: int, amount: int) -> int:
+    async def update_user_balance(self, user_id: int, amount: int | None = None, delta: int | None = None) -> int:
+        change = amount if amount is not None else (delta if delta is not None else 0)
         await self._execute(
             "UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?",
-            (amount, user_id),
+            (change, user_id),
         )
         user = await self._fetchone("SELECT balance FROM users WHERE id = ?", (user_id,))
         return user["balance"] if user else 0
@@ -328,11 +329,12 @@ class Database:
         price: int,
         is_trial: int = 0,
         description: str = "",
+        is_active: int = 1,
     ) -> int:
         return await self._execute(
-            "INSERT INTO products (name, panel_id, volume_gb, duration_days, price, is_trial, description) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, panel_id, volume_gb, duration_days, price, is_trial, description),
+            "INSERT INTO products (name, panel_id, volume_gb, duration_days, price, is_trial, description, is_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, panel_id, volume_gb, duration_days, price, is_trial, description, is_active),
         )
 
     async def update_product(self, product_id: int, **fields):
