@@ -13,7 +13,7 @@ from django.conf import settings
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(settings.BOT_DB_PATH)
+    conn = sqlite3.connect(settings.BOT_DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
