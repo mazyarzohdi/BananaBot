@@ -158,12 +158,12 @@ main_menu() {
     echo "   [21] 💾 Backup Database"
     echo "   [22] ♻️  Restore Database from Backup"
     echo "   [23] 🩺 Check / Repair Database Schema"
-    echo "   [27] 🔀 Migrate Database (SQLite <-> PostgreSQL)"
+    echo "   [24] 🔀 Migrate Database (SQLite <-> PostgreSQL)"
     echo ""
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo "   [24] 🔄 Update Bot from GitHub"
-    echo "   [25] 🔧 Update THIS Management Menu (manage.sh) from GitHub"
-    echo "   [26] 🗑️  Completely Remove Bot"
+    echo "   [25] 🔄 Update Bot from GitHub"
+    echo "   [26] 🔧 Update THIS Management Menu (manage.sh) from GitHub"
+    echo "   [27] 🗑️  Completely Remove Bot"
     echo ""
     echo "   [0] 🚪 Exit"
     echo ""
@@ -1224,10 +1224,10 @@ run() {
             21) action_backup_db ;;
             22) action_restore_db ;;
             23) action_check_db_schema ;;
-            24) action_update ;;
-            25) action_update_manage_script ;;
-            26) action_uninstall ;;
-            27) action_migrate_db ;;
+            24) action_migrate_db ;;
+            25) action_update ;;
+            26) action_update_manage_script ;;
+            27) action_uninstall ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
