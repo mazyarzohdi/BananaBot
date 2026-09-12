@@ -14,10 +14,7 @@ being embedded on arbitrary third-party sites while still letting Telegram
 itself display it.
 """
 
-TELEGRAM_FRAME_ANCESTORS = (
-    "'self' https://web.telegram.org https://webk.telegram.org "
-    "https://webz.telegram.org https://*.web.telegram.org"
-)
+
 
 
 class TelegramEmbedMiddleware:
@@ -27,9 +24,10 @@ class TelegramEmbedMiddleware:
     def __call__(self, request):
         response = self.get_response(request)
         # Remove the blanket X-Frame-Options: DENY set by
-        # XFrameOptionsMiddleware and rely on CSP frame-ancestors instead,
-        # which supports an allow-list instead of an all-or-nothing switch.
+        # XFrameOptionsMiddleware.
+        # We do not set CSP frame-ancestors because Telegram clients 
+        # (especially on Android) might use local wrappers (tg://, http://localhost)
+        # which would be blocked by a strict CSP.
         if "X-Frame-Options" in response:
             del response["X-Frame-Options"]
-        response["Content-Security-Policy"] = f"frame-ancestors {TELEGRAM_FRAME_ANCESTORS}"
         return response

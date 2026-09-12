@@ -87,7 +87,7 @@ html {
 
 body {
   min-height: 100vh;
-  min-height: -webkit-fill-available;
+  min-height: 100dvh;
   background: radial-gradient(circle at 85% 15%, rgba(99, 102, 241, 0.08) 0%, transparent 45%),
               radial-gradient(circle at 15% 80%, rgba(139, 92, 246, 0.06) 0%, transparent 40%),
               var(--bg-canvas);
@@ -131,7 +131,7 @@ body {
   top: 0;
   right: 0;
   height: 100vh;
-  height: -webkit-fill-available;
+  height: 100dvh;
   z-index: 120;
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
   user-select: none;
@@ -1324,7 +1324,7 @@ textarea {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  min-height: -webkit-fill-available;
+  min-height: 100dvh;
   background: radial-gradient(circle at center, rgba(99, 102, 241, 0.15) 0%, transparent 60%), var(--bg-canvas);
   padding: 20px;
 }
