@@ -12,11 +12,7 @@ from . import auth as api_auth
 logger = logging.getLogger(__name__)
 
 
-def _client_ip(request) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
+_client_ip = api_auth._client_ip
 
 
 def api_view(endpoint: str, require_nonce: bool = True):

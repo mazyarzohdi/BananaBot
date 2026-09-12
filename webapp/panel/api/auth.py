@@ -43,10 +43,16 @@ class AuthResult:
 
 
 def _client_ip(request) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
+    remote_addr = request.META.get("REMOTE_ADDR", "")
+    trusted_proxies = {"127.0.0.1", "::1", "localhost"}
+    if remote_addr in trusted_proxies:
+        x_real_ip = request.META.get("HTTP_X_REAL_IP")
+        if x_real_ip:
+            return x_real_ip.strip()
+        xff = request.META.get("HTTP_X_FORWARDED_FOR")
+        if xff:
+            return xff.split(",")[0].strip()
+    return remote_addr
 
 
 def authenticate(request, require_nonce: bool = True) -> AuthResult:

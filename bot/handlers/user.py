@@ -1,5 +1,6 @@
 """User-facing bot handlers."""
 
+import asyncio
 import logging
 import random
 import time
@@ -46,6 +47,14 @@ from utils.helpers import format_expiry, load_config_links, parse_positive_int
 logger = logging.getLogger(__name__)
 router = Router()
 sub_service = SubscriptionService()
+
+_user_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_user_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
 
 
 async def _reward_referral_and_notify(bot, db, buyer_user_id: int, purchase_amount: int, order_id: int | None, source: str):
@@ -514,39 +523,61 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
         await callback.answer("محصول پیدا نشد", show_alert=True)
         return
 
-    # کوپن از FSM state
-    fsm_data = await state.get_data()
-    coupon_code = fsm_data.get("coupon_code")
-    coupon_id = fsm_data.get("coupon_id")
-    discount_amount = int(fsm_data.get("discount_amount", 0))
+    async with _get_user_lock(db_user["id"]):
+        # کوپن از FSM state
+        fsm_data = await state.get_data()
+        coupon_code = fsm_data.get("coupon_code")
+        coupon_id = fsm_data.get("coupon_id")
 
-    final_price = max(0, product["price"] - discount_amount)
+        consumed_coupon = False
+        discount_amount = 0
+        if coupon_id:
+            c_ok, discount_val, c_err = await db.consume_coupon_atomic(coupon_id, db_user["id"], product["price"])
+            if not c_ok:
+                await callback.answer(c_err or "کوپن نامعتبر است", show_alert=True)
+                await state.update_data(coupon_code=None, coupon_id=None, discount_amount=0)
+                return
+            discount_amount = discount_val
+            consumed_coupon = True
 
-    # Re-fetch the user's current balance — db_user may be stale if they just topped up.
-    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
-    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+        final_price = max(0, product["price"] - discount_amount)
 
-    if balance < final_price:
-        deficit = final_price - balance
-        await callback.message.edit_text(
-            t(
-                "insufficient_balance",
-                balance=balance,
-                price=final_price,
-                deficit=deficit,
-            ),
-            reply_markup=insufficient_balance_inline(product_id),
-        )
-        await callback.answer()
-        return
+        # کسر اتمیک موجودی پیش از ایجاد سرویس روی پنل (جلوگیری از Race Condition)
+        deducted = await db.deduct_balance_atomic(db_user["id"], final_price)
+        if not deducted:
+            if consumed_coupon and coupon_id:
+                await db.rollback_coupon_use(coupon_id, db_user["id"])
+            fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+            current_balance = fresh_user["balance"] if fresh_user else 0
+            deficit = max(0, final_price - current_balance)
+            await callback.message.edit_text(
+                t(
+                    "insufficient_balance",
+                    balance=current_balance,
+                    price=final_price,
+                    deficit=deficit,
+                ),
+                reply_markup=insufficient_balance_inline(product_id),
+            )
+            await callback.answer()
+            return
 
-    try:
-        result = await sub_service.create_from_product(
-            db_user["id"],
-            callback.from_user.id,
-            product,
-        )
-        await db.update_user_balance(db_user["id"], -final_price)
+        try:
+            result = await sub_service.create_from_product(
+                db_user["id"],
+                callback.from_user.id,
+                product,
+            )
+        except Exception as e:
+            logger.exception("Purchase failed during panel client creation")
+            # عودت اتمیک موجودی و کوپن در صورت شکست ساخت کلاینت روی پنل
+            await db.refund_balance(db_user["id"], final_price)
+            if consumed_coupon and coupon_id:
+                await db.rollback_coupon_use(coupon_id, db_user["id"])
+            await callback.message.edit_text(f"❌ خطا در ساخت سرویس روی پنل: {e}")
+            await callback.answer()
+            return
+
         order_id, _order_code = await db.create_order(
             db_user["id"],
             product_id,
@@ -558,10 +589,6 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
         await _reward_referral_and_notify(
             callback.bot, db, db_user["id"], final_price, order_id, f"خرید {product['name']}"
         )
-        # ثبت استفاده از کوپن
-        if coupon_id and coupon_code:
-            await db.apply_coupon(coupon_id, db_user["id"])
-        # پاک کردن کوپن از state
         await state.update_data(coupon_code=None, coupon_id=None, discount_amount=0)
 
         success_text = t(
@@ -578,13 +605,7 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
             parse_mode="Markdown",
             reply_markup=service_actions_inline(result["id"], show_back=False),
         )
-    except ValueError as e:
-        await callback.message.edit_text(str(e))
-    except Exception as e:
-        logger.exception("Purchase failed")
-        await callback.message.edit_text(f"❌ خطا در خرید: {e}")
-
-    await callback.answer()
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("card_topup:"))
@@ -682,9 +703,10 @@ async def _resolve_trial_product(db) -> dict | None:
 @router.message(F.text == t("trial"))
 async def trial_account(message: Message, db_user: dict):
     db = get_db()
-    if await db.user_has_trial(db_user["id"]):
-        await message.answer(t("trial_used"))
-        return
+    async with _get_user_lock(db_user["id"]):
+        if await db.user_has_trial(db_user["id"]):
+            await message.answer(t("trial_used"))
+            return
 
     trial_enabled = await db.get_setting("trial_enabled", "1")
     if trial_enabled != "1":
@@ -961,32 +983,43 @@ async def renew_service_execute(callback: CallbackQuery, db_user: dict):
         await callback.answer("❌ این سرویس قابل تمدید نیست.", show_alert=True)
         return
 
-    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
-    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    price = product["price"]
 
-    if balance < product["price"]:
-        deficit = product["price"] - balance
-        await callback.message.edit_text(
-            t("insufficient_balance", balance=balance, price=product["price"], deficit=deficit),
-            reply_markup=insufficient_balance_renew_inline(sub_id),
-        )
-        await callback.answer()
-        return
+    async with _get_user_lock(db_user["id"]):
+        # کسر اتمیک پیش از درخواست به پنل (جلوگیری از Race Condition)
+        deducted = await db.deduct_balance_atomic(db_user["id"], price)
+        if not deducted:
+            fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+            current_balance = fresh_user["balance"] if fresh_user else 0
+            deficit = max(0, price - current_balance)
+            await callback.message.edit_text(
+                t("insufficient_balance", balance=current_balance, price=price, deficit=deficit),
+                reply_markup=insufficient_balance_renew_inline(sub_id),
+            )
+            await callback.answer()
+            return
 
-    try:
-        result = await sub_service.renew_subscription(
-            sub_id, product["duration_days"], product["volume_gb"]
-        )
-        await db.update_user_balance(db_user["id"], -product["price"])
+        try:
+            result = await sub_service.renew_subscription(
+                sub_id, product["duration_days"], product["volume_gb"]
+            )
+        except Exception as e:
+            logger.exception("Renew failed on panel")
+            # عودت وجه در صورت شکست تمدید در پنل
+            await db.refund_balance(db_user["id"], price)
+            await callback.message.edit_text(f"❌ خطا در تمدید: {e}")
+            await callback.answer()
+            return
+
         order_id, _order_code = await db.create_order(
             db_user["id"],
             product["id"],
-            product["price"],
+            price,
             "balance",
             f"تمدید {product['name']} (سرویس #{sub_id})",
         )
         await _reward_referral_and_notify(
-            callback.bot, db, db_user["id"], product["price"], order_id, f"تمدید {product['name']}"
+            callback.bot, db, db_user["id"], price, order_id, f"تمدید {product['name']}"
         )
         await callback.message.edit_text(
             f"✅ سرویس با موفقیت تمدید شد!\n\n"
@@ -994,12 +1027,7 @@ async def renew_service_execute(callback: CallbackQuery, db_user: dict):
             f"⏱ انقضای جدید: {format_expiry(result['expiry_time'])}",
             reply_markup=service_actions_inline(sub_id, show_back=False),
         )
-    except ValueError as e:
-        await callback.message.edit_text(str(e))
-    except Exception as e:
-        logger.exception("Renew failed")
-        await callback.message.edit_text(f"❌ خطا در تمدید: {e}")
-    await callback.answer()
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("card_topup_renew:"))
@@ -1295,33 +1323,34 @@ async def reseller_confirm(callback: CallbackQuery, db_user: dict):
         await callback.answer("پلن پیدا نشد", show_alert=True)
         return
 
-    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
-    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    async with _get_user_lock(db_user["id"]):
+        existing_reseller = await db.get_reseller_by_user(db_user["id"])
+        if existing_reseller and existing_reseller["panel_id"] != plan["panel_id"]:
+            configs_count = await db.get_reseller_configs_count(existing_reseller["id"])
+            if configs_count > 0:
+                await callback.answer(
+                    "❌ این پلن روی پنل دیگری است. ابتدا کانفیگ‌های فعلی خود را حذف کنید یا "
+                    "پلنی از همان پنل قبلی انتخاب کنید.",
+                    show_alert=True,
+                )
+                return
 
-    existing_reseller = await db.get_reseller_by_user(db_user["id"])
-    if existing_reseller and existing_reseller["panel_id"] != plan["panel_id"]:
-        configs_count = await db.get_reseller_configs_count(existing_reseller["id"])
-        if configs_count > 0:
-            await callback.answer(
-                "❌ این پلن روی پنل دیگری است. ابتدا کانفیگ‌های فعلی خود را حذف کنید یا "
-                "پلنی از همان پنل قبلی انتخاب کنید.",
-                show_alert=True,
+        price = plan["price"]
+        deducted = await db.deduct_balance_atomic(db_user["id"], price)
+        if not deducted:
+            fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+            current_balance = fresh_user["balance"] if fresh_user else 0
+            deficit = max(0, price - current_balance)
+            await callback.message.edit_text(
+                f"❌ موجودی کیف پول کافی نیست.\nموجودی شما: {current_balance:,} تومان\n"
+                f"مبلغ مورد نیاز: {price:,} تومان\nمبلغ کسری: {deficit:,} تومان",
+                reply_markup=reseller_insufficient_balance_inline(plan_id),
             )
+            await callback.answer()
             return
 
-    if balance < plan["price"]:
-        deficit = plan["price"] - balance
-        await callback.message.edit_text(
-            f"❌ موجودی کیف پول کافی نیست.\nموجودی شما: {balance:,} تومان\n"
-            f"مبلغ مورد نیاز: {plan['price']:,} تومان\nمبلغ کسری: {deficit:,} تومان",
-            reply_markup=reseller_insufficient_balance_inline(plan_id),
-        )
-        await callback.answer()
-        return
-
-    now = int(time.time())
-    expires_at = now + plan["duration_days"] * 86400
-    await db.update_user_balance(db_user["id"], -plan["price"])
+        now = int(time.time())
+        expires_at = now + plan["duration_days"] * 86400
     await db.create_or_renew_reseller(
         db_user["id"], plan_id, plan["panel_id"], plan["volume_gb"], expires_at,
     )

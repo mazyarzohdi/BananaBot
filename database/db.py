@@ -101,6 +101,31 @@ class Database:
         user = await self._fetchone("SELECT balance FROM users WHERE id = ?", (user_id,))
         return user["balance"] if user else 0
 
+    async def deduct_balance_atomic(self, user_id: int, amount: int) -> bool:
+        """Atomic balance deduction in SQLite.
+        Only succeeds if current balance >= amount. Returns True on success, False if insufficient balance.
+        """
+        if amount < 0:
+            return False
+        if amount == 0:
+            return True
+        conn = await self.connect()
+        try:
+            cursor = await conn.execute(
+                "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
+                (amount, user_id, amount),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
+    async def refund_balance(self, user_id: int, amount: int) -> int:
+        """Safely restores balance if a downstream operation (e.g. panel API call) fails."""
+        if amount <= 0:
+            return 0
+        return await self.update_user_balance(user_id, amount)
+
     async def set_user_banned(self, user_id: int, banned: bool):
         await self._execute(
             "UPDATE users SET is_banned = ? WHERE id = ?",
@@ -717,10 +742,12 @@ class Database:
         )
 
     async def update_trial_app(self, app_id: int, **fields):
-        if not fields:
+        allowed = {"button_text", "caption", "file_id", "file_name"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
             return
-        cols = ", ".join(f"{k} = ?" for k in fields)
-        params = tuple(fields.values()) + (app_id,)
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        params = tuple(updates.values()) + (app_id,)
         await self._execute(f"UPDATE trial_apps SET {cols} WHERE id = ?", params)
 
     async def delete_trial_app(self, app_id: int):
@@ -806,6 +833,67 @@ class Database:
             "UPDATE coupons SET used_count = used_count + 1 WHERE id = ?",
             (coupon_id,),
         )
+
+    async def consume_coupon_atomic(self, coupon_id: int, user_id: int, price: int) -> tuple[bool, int, str]:
+        """Atomic validation and consumption of a coupon in a single SQLite transaction."""
+        conn = await self.connect()
+        try:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute("SELECT * FROM coupons WHERE id = ?", (coupon_id,))
+            coupon_row = await cursor.fetchone()
+            if not coupon_row:
+                return False, 0, "❌ کوپن تخفیف یافت نشد."
+            coupon = dict(coupon_row)
+            if not coupon.get("is_active"):
+                return False, 0, "❌ این کوپن غیرفعال است."
+            if coupon.get("expires_at"):
+                from datetime import datetime
+                try:
+                    exp = datetime.fromisoformat(coupon["expires_at"])
+                    if datetime.now() > exp:
+                        return False, 0, "❌ مدت اعتبار این کوپن به پایان رسیده است."
+                except ValueError:
+                    pass
+            if coupon.get("max_uses", 0) > 0 and coupon.get("used_count", 0) >= coupon["max_uses"]:
+                return False, 0, "❌ ظرفیت استفاده از این کوپن تکمیل شده است."
+            if coupon.get("usage_type") in ("once_per_user", "one_time"):
+                cursor = await conn.execute(
+                    "SELECT id FROM coupon_uses WHERE coupon_id = ? AND user_id = ?",
+                    (coupon_id, user_id),
+                )
+                already = await cursor.fetchone()
+                if already:
+                    return False, 0, "❌ شما قبلاً از این کوپن استفاده کرده‌اید."
+
+            discount = self.calc_discount(coupon, price)
+            await conn.execute(
+                "INSERT INTO coupon_uses (coupon_id, user_id) VALUES (?, ?)",
+                (coupon_id, user_id),
+            )
+            await conn.execute(
+                "UPDATE coupons SET used_count = used_count + 1 WHERE id = ?",
+                (coupon_id,),
+            )
+            await conn.commit()
+            return True, discount, ""
+        finally:
+            await conn.close()
+
+    async def rollback_coupon_use(self, coupon_id: int, user_id: int):
+        """Rolls back the coupon use record if the purchase fails."""
+        conn = await self.connect()
+        try:
+            await conn.execute(
+                "DELETE FROM coupon_uses WHERE id IN (SELECT id FROM coupon_uses WHERE coupon_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1)",
+                (coupon_id, user_id),
+            )
+            await conn.execute(
+                "UPDATE coupons SET used_count = MAX(0, used_count - 1) WHERE id = ?",
+                (coupon_id,),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
 
     def calc_discount(self, coupon: dict, price: int) -> int:
         """مبلغ تخفیف رو محاسبه می‌کنه (حداکثر برابر قیمت)."""

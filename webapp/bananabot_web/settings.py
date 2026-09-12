@@ -6,10 +6,38 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 BOT_DIR = BASE_DIR.parent  # /opt/BananaBot
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "change-me-in-production")
-# Default to DEBUG=True for local development unless DJANGO_DEBUG=0 is explicitly set (e.g. In production systemd service)
-DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
+_secret_file = BOT_DIR / "data" / ".django_secret"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    if _secret_file.exists():
+        try:
+            SECRET_KEY = _secret_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            SECRET_KEY = None
+    if not SECRET_KEY:
+        import secrets
+        SECRET_KEY = secrets.token_urlsafe(50)
+        try:
+            _secret_file.parent.mkdir(parents=True, exist_ok=True)
+            _secret_file.write_text(SECRET_KEY, encoding="utf-8")
+        except Exception:
+            pass
+
+# Default to DEBUG=False in production unless DJANGO_DEBUG=1 is explicitly set
+DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+
+_web_domain = os.environ.get("WEB_DOMAIN", "").strip()
+_allowed_hosts_env = os.environ.get("DJANGO_ALLOWED_HOSTS", "").strip()
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+elif _web_domain:
+    ALLOWED_HOSTS = [_web_domain, "127.0.0.1", "localhost"]
+else:
+    ALLOWED_HOSTS = ["*"]
+
+# Security: Prevent Memory Exhaustion / Denial of Service via large uploads
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -98,6 +126,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_AGE = 86400 * 7   # 7 days
 SESSION_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = not DEBUG
 
 # Telegram shows this panel inside its own page (Mini App webview / embedded
@@ -113,7 +142,6 @@ if not DEBUG:
 
 # Needed for Django's CSRF check to accept POSTs (e.g. the settings forms)
 # once the panel is reachable at a real domain instead of only "*".
-_web_domain = os.environ.get("WEB_DOMAIN", "").strip()
 CSRF_TRUSTED_ORIGINS = []
 if _web_domain:
     CSRF_TRUSTED_ORIGINS = [f"https://{_web_domain}", f"http://{_web_domain}"]

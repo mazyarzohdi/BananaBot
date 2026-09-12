@@ -523,13 +523,15 @@ def reconcile(db_path: str) -> dict:
         except sqlite3.OperationalError:
             pass
 
-        # ایندکس‌های کمکی برای API نمایندگان: جستجوی سریع کلید، پاک‌سازی/چک
-        # nonce، و شمارش پنجره‌ای درخواست‌ها برای Rate Limiting.
+        # ایندکس‌های کمکی برای API نمایندگان، کوپن‌ها، پرداخت‌ها و سرویس‌ها
         for idx_stmt in (
             "CREATE INDEX IF NOT EXISTS idx_api_keys_reseller ON api_keys(reseller_id)",
             "CREATE INDEX IF NOT EXISTS idx_api_nonces_key_created ON api_nonces(api_key_id, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_api_request_log_key_created ON api_request_log(api_key_id, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_api_request_log_endpoint_created ON api_request_log(api_key_id, endpoint, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_coupon_uses_coupon_user ON coupon_uses(coupon_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status)",
         ):
             try:
                 conn.execute(idx_stmt)

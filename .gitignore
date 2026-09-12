@@ -1,6 +1,8 @@
 # Environment and secrets
 .env
 webapp/.env
+.django_secret
+data/.django_secret
 GEMINI.md
 .agents/
 

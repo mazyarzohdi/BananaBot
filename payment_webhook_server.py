@@ -18,6 +18,7 @@ require a restart: this process keeps running either way and just replies
 "disabled" while it's off, so toggling it is instant.
 """
 
+import collections
 import hmac
 import json
 import logging
@@ -25,6 +26,8 @@ import os
 import re
 import sqlite3
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -191,8 +194,31 @@ def notify_payment_approved(payment: dict):
     send_telegram_message(int(telegram_id), text, reply_markup)
 
 
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX_REQUESTS = 30  # max 30 requests per minute per IP
+_ip_request_history = collections.defaultdict(list)
+_rate_limit_lock = threading.Lock()
+
+
+def _is_rate_limited(ip: str) -> bool:
+    now = time.time()
+    with _rate_limit_lock:
+        timestamps = _ip_request_history[ip]
+        cutoff = now - _RATE_LIMIT_WINDOW
+        _ip_request_history[ip] = [t for t in timestamps if t > cutoff]
+        if len(_ip_request_history[ip]) >= _RATE_LIMIT_MAX_REQUESTS:
+            return True
+        _ip_request_history[ip].append(now)
+        if len(_ip_request_history) > 1000:
+            for k in list(_ip_request_history.keys()):
+                if not _ip_request_history[k]:
+                    del _ip_request_history[k]
+        return False
+
+
 class WebhookHandler(BaseHTTPRequestHandler):
     server_version = "BananaBotPaymentWebhook/1.0"
+    MAX_BODY_SIZE = 64 * 1024  # 64 KB limit
 
     def log_message(self, fmt, *args):
         logger.info("%s - %s", self.address_string(), fmt % args)
@@ -206,13 +232,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        client = self.client_address[0]
+        if _is_rate_limited(client):
+            self._json_response(429, {"ok": False, "error": "rate_limited"})
+            return
         # Simple health check — hit this in a browser to confirm the
         # service is up and listening on the right port.
         self._json_response(200, {"ok": True, "service": "bananabot-payment-webhook"})
 
     def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        return self.rfile.read(length) if length else b""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            return b""
+        if length > self.MAX_BODY_SIZE:
+            logger.warning("Rejected request: body size %d exceeds limit %d", length, self.MAX_BODY_SIZE)
+            return b""
+        return self.rfile.read(length) if length > 0 else b""
 
     def _extract_sms_text(self, raw_body: bytes) -> str | None:
         """Tries a few ways to pull the SMS text out of the request body,
@@ -260,6 +296,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         client = self.client_address[0]
+        if _is_rate_limited(client):
+            logger.warning("Rate limit exceeded for %s", client)
+            self._json_response(429, {"ok": False, "error": "rate_limited"})
+            return
 
         if self.path.rstrip("/") != "/webhook/payment":
             logger.warning("Request to unknown path %r from %s — check the forwarder app's URL.", self.path, client)

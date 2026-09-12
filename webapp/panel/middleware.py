@@ -17,17 +17,31 @@ itself display it.
 
 
 
+from django.conf import settings
+
+TELEGRAM_ALLOWED_FRAME_ANCESTORS = (
+    "'self' https://web.telegram.org https://webk.telegram.org "
+    "https://webz.telegram.org https://*.telegram.org https://*.web.telegram.org"
+)
+
+
 class TelegramEmbedMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
         response = self.get_response(request)
-        # Remove the blanket X-Frame-Options: DENY set by
-        # XFrameOptionsMiddleware.
-        # We do not set CSP frame-ancestors because Telegram clients 
-        # (especially on Android) might use local wrappers (tg://, http://localhost)
-        # which would be blocked by a strict CSP.
+        path = request.path.rstrip("/")
+        admin_prefix = f"{settings.WEB_PATH}/admin"
+
+        # Admin routes must never be framed under any circumstances (prevent Clickjacking)
+        if path.startswith(admin_prefix) or path == admin_prefix:
+            response["X-Frame-Options"] = "DENY"
+            response["Content-Security-Policy"] = "frame-ancestors 'none'"
+            return response
+
+        # User and Mini App routes: only allow framing from official Telegram domains
         if "X-Frame-Options" in response:
             del response["X-Frame-Options"]
+        response["Content-Security-Policy"] = f"frame-ancestors {TELEGRAM_ALLOWED_FRAME_ANCESTORS}"
         return response

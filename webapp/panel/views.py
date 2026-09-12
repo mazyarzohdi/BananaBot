@@ -52,6 +52,7 @@ def webapp_login(request: HttpRequest):
     if not user:
         return JsonResponse({"ok": False, "error": "اعتبارسنجی Telegram Mini App ناموفق بود."}, status=403)
 
+    request.session.cycle_key()
     request.session["tg_user"] = {
         "id": str(user["id"]),
         "first_name": user.get("first_name", ""),
@@ -70,6 +71,7 @@ def login_view(request: HttpRequest):
         data = dict(request.GET)
         data = {k: v[0] if isinstance(v, list) else v for k, v in data.items()}
         if verify_telegram_auth(data):
+            request.session.cycle_key()
             request.session["tg_user"] = data
             return redirect("panel:dashboard")
         else:
@@ -165,15 +167,27 @@ def admin_user_detail(request: HttpRequest, telegram_id: int):
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "add_balance":
-            amount = int(request.POST.get("amount", 0))
-            new_balance = bot_db.update_user_balance(user["id"], amount)
-            _notify_balance_change(user, amount, new_balance)
-            messages.success(request, f"{amount:,} تومان به موجودی اضافه شد. به کاربر اطلاع داده شد.")
+            try:
+                amount = int(request.POST.get("amount", 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount <= 0:
+                messages.error(request, "مبلغ باید یک عدد مثبت بزرگ‌تر از صفر باشد.")
+            else:
+                new_balance = bot_db.update_user_balance(user["id"], amount)
+                _notify_balance_change(user, amount, new_balance)
+                messages.success(request, f"{amount:,} تومان به موجودی اضافه شد. به کاربر اطلاع داده شد.")
         elif action == "sub_balance":
-            amount = int(request.POST.get("amount", 0))
-            new_balance = bot_db.update_user_balance(user["id"], -amount)
-            _notify_balance_change(user, -amount, new_balance)
-            messages.success(request, f"{amount:,} تومان از موجودی کم شد. به کاربر اطلاع داده شد.")
+            try:
+                amount = int(request.POST.get("amount", 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount <= 0:
+                messages.error(request, "مبلغ باید یک عدد مثبت بزرگ‌تر از صفر باشد.")
+            else:
+                new_balance = bot_db.update_user_balance(user["id"], -amount)
+                _notify_balance_change(user, -amount, new_balance)
+                messages.success(request, f"{amount:,} تومان از موجودی کم شد. به کاربر اطلاع داده شد.")
         elif action == "ban":
             bot_db.set_user_banned(user["id"], True)
             messages.warning(request, "کاربر بن شد.")
@@ -635,6 +649,8 @@ def user_wallet(request: HttpRequest):
                 messages.error(request, "لطفاً تصویر رسید را انتخاب کنید.")
             elif not photo.content_type or not photo.content_type.startswith("image/"):
                 messages.error(request, "فقط فایل تصویری قابل قبول است.")
+            elif photo.size > 10 * 1024 * 1024:
+                messages.error(request, "حجم تصویر نباید بیشتر از 10 مگابایت باشد.")
             else:
                 photo_bytes = photo.read()
                 caption = (
@@ -645,9 +661,11 @@ def user_wallet(request: HttpRequest):
                 )
                 markup = _payment_actions_markup(payment_id)
                 sent_refs, file_id = [], None
+                import os as _os
+                safe_fname = _os.path.basename(photo.name) if photo.name else "receipt.jpg"
                 for admin_id in settings.ADMIN_TELEGRAM_IDS:
                     result = telegram_api.send_photo(
-                        admin_id, photo_bytes, photo.name or "receipt.jpg",
+                        admin_id, photo_bytes, safe_fname,
                         caption=caption, reply_markup=markup,
                     )
                     if result and result.get("ok"):

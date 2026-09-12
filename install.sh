@@ -325,11 +325,13 @@ EOF
         warn "info, or edit $INSTALL_DIR/.env directly and re-save it as UTF-8."
     fi
 
+    chmod 600 "$INSTALL_DIR/.env"
     success "Bot .env file created."
 }
 
 create_data_dir() {
     mkdir -p "$INSTALL_DIR/data"
+    chmod 700 "$INSTALL_DIR/data"
     chown -R root:root "$INSTALL_DIR"
     success "data/ directory ready."
 }

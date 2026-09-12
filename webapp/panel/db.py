@@ -473,6 +473,53 @@ def add_reseller_config(**data) -> int:
         return cur.lastrowid
 
 
+def reserve_reseller_config_atomic(reseller_id: int, volume_gb: float, **data) -> tuple[bool, int | None, float]:
+    """Atomically checks remaining quota and inserts a pending config.
+    Returns (True, config_id, available) if reserved, or (False, None, available) if quota exceeded.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM("
+            "  CASE WHEN status = 'deleted' THEN consumed_gb ELSE volume_gb + consumed_gb END"
+            "), 0) as used "
+            "FROM reseller_configs WHERE reseller_id = ?",
+            (reseller_id,),
+        ).fetchone()
+        used = row["used"] if row else 0.0
+        r_row = conn.execute("SELECT quota_gb FROM resellers WHERE id = ?", (reseller_id,)).fetchone()
+        quota_gb = r_row["quota_gb"] if r_row else 0.0
+        available = max(0.0, quota_gb - used)
+        if volume_gb > available:
+            return False, None, available
+
+        cur = conn.execute(
+            "INSERT INTO reseller_configs "
+            "(reseller_id, label, email, sub_id, volume_gb, expiry_time, "
+            "config_link, config_links, sub_link, status, source, api_key_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                reseller_id,
+                data.get("label", ""),
+                data.get("email", ""),
+                data.get("sub_id", ""),
+                volume_gb,
+                data.get("expiry_time", 0),
+                "",
+                "[]",
+                "",
+                "pending",
+                data.get("source", "panel"),
+                data.get("api_key_id"),
+            ),
+        )
+        return True, cur.lastrowid, available
+
+
+def cancel_pending_reseller_config(config_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM reseller_configs WHERE id = ? AND status = 'pending'", (config_id,))
+
+
 def update_reseller_config(config_id: int, **fields):
     allowed = {"label", "volume_gb", "expiry_time", "config_link", "config_links", "sub_link", "status", "sub_id", "consumed_gb"}
     updates = {k: v for k, v in fields.items() if k in allowed}

@@ -165,13 +165,6 @@ def create_config(
     if volume_gb <= 0 or duration_days <= 0:
         return _result(False, "INVALID_INPUT", "حجم و زمان باید بزرگتر از صفر باشند.")
 
-    available = quota_available(reseller)
-    if volume_gb > available:
-        return _result(
-            False, "QUOTA_EXCEEDED",
-            f"حجم درخواستی بیشتر از حجم باقیمانده شماست ({available:.2f} GB).",
-        )
-
     panel_url, api_token, inbound_ids, on_hold = _panel_ids(reseller)
     expiry_ms = xui_client.compute_expiry_ms(duration_days, on_hold=on_hold)
     if not on_hold and reseller.get("expires_at") and expiry_ms > reseller["expires_at"] * 1000:
@@ -185,18 +178,33 @@ def create_config(
 
     email = xui_client.generate_client_email(int(tg_id))
     sub_id = xui_client.generate_sub_id()
+
+    # رزرو اتمیک حجم در دیتابیس برای جلوگیری از Race Condition
+    reserved, config_id, available = bot_db.reserve_reseller_config_atomic(
+        reseller["id"], volume_gb,
+        label=label, email=email, sub_id=sub_id, expiry_time=expiry_ms,
+        source=source, api_key_id=api_key_id,
+    )
+    if not reserved:
+        return _result(
+            False, "QUOTA_EXCEEDED",
+            f"حجم درخواستی بیشتر از حجم باقیمانده شماست ({available:.2f} GB).",
+        )
+
     try:
         xui_client.add_client(
             panel_url, api_token, inbound_ids, email,
             volume_gb, expiry_ms, sub_id=sub_id, tg_id=int(tg_id),
             comment=f"reseller_{reseller['id']}", on_hold=on_hold,
         )
-    except xui_client.XUIError as e:
-        return _result(False, "PANEL_ERROR", f"خطا در ساخت کانفیگ روی پنل: {e}")
+    except Exception as e:
+        bot_db.cancel_pending_reseller_config(config_id)
+        if isinstance(e, xui_client.XUIError):
+            return _result(False, "PANEL_ERROR", f"خطا در ساخت کانفیگ روی پنل: {e}")
+        logger.exception("create_config: unexpected error calling panel for %s", email)
+        return _result(False, "PANEL_ERROR", "خطای غیرمنتظره در ارتباط با پنل.")
 
-    # کلاینت روی پنل ساخته شد؛ از اینجا به بعد هرچه پیش بیاید باید رکورد را
-    # در دیتابیس ذخیره کنیم چون کانفیگ واقعاً وجود دارد. گرفتن لینک‌ها صرفاً
-    # یک قابلیت جانبی است، نباید کل عملیات را با یک خطای غیرمنتظره متوقف کند.
+    # کلاینت روی پنل ساخته شد؛ وضعیت کانفیگ را از pending به active تغییر می‌دهیم.
     try:
         links = xui_client.get_client_links(panel_url, api_token, email)
     except Exception:
@@ -208,11 +216,12 @@ def create_config(
     except Exception:
         sub_link = ""
 
-    config_id = bot_db.add_reseller_config(
-        reseller_id=reseller["id"], label=label, email=email, sub_id=sub_id,
-        volume_gb=volume_gb, expiry_time=expiry_ms,
-        config_link=(links[0] if links else ""), config_links=json.dumps(links),
-        sub_link=sub_link, status="active", source=source, api_key_id=api_key_id,
+    bot_db.update_reseller_config(
+        config_id,
+        config_link=(links[0] if links else ""),
+        config_links=json.dumps(links),
+        sub_link=sub_link,
+        status="active",
     )
     config = bot_db.get_reseller_config(config_id)
     return _result(True, config=config)
