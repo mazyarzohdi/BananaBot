@@ -94,15 +94,32 @@ BOT_DB_PATH = os.environ.get(
     str(BOT_DIR / "data" / "bot.db"),
 )
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BOT_DB_PATH,
-        "OPTIONS": {
-            "timeout": 30,
-        },
+DB_TYPE = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+
+if DB_TYPE == "postgres":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("DB_NAME", "bananabot"),
+            "USER": os.environ.get("DB_USER", "bananabot"),
+            "PASSWORD": os.environ.get("DB_PASS", ""),
+            "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
+            "PORT": os.environ.get("DB_PORT", "5432"),
+            "OPTIONS": {
+                "connect_timeout": 5,
+            },
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BOT_DB_PATH,
+            "OPTIONS": {
+                "timeout": 30,
+            },
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = []
 

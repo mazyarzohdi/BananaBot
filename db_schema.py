@@ -23,6 +23,7 @@ bot's process (which uses aiosqlite) or the separate web panel process
 directly from the command line during a manual DB restore.
 """
 
+import os
 import re
 import sqlite3
 import sys
@@ -304,6 +305,16 @@ CREATE TABLE IF NOT EXISTS referral_earnings (
 """
 
 
+def get_dialect_schema(db_type: str = "sqlite") -> str:
+    """Returns the schema translated to the target database dialect."""
+    schema = SCHEMA
+    if db_type == "postgres":
+        schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        schema = schema.replace("datetime('now')", "CURRENT_TIMESTAMP")
+        schema = schema.replace("REAL", "DOUBLE PRECISION")
+    return schema
+
+
 DEFAULT_SETTINGS = {
     "welcome_text": "سلام! به ربات فروش VPN خوش آمدید.",
     "support_text": "برای پشتیبانی با ادمین تماس بگیرید.",
@@ -406,6 +417,12 @@ def reconcile(db_path: str) -> dict:
     missing columns, apply legacy MIGRATIONS, and seed any DEFAULT_SETTINGS
     that aren't already present. Returns a report of what changed so
     callers (e.g. manage.sh) can show the admin what happened."""
+    db_type = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+    if db_type == "postgres":
+        # Postgres setup is handled by install.sh / migrate script.
+        # We don't reconcile postgres schemas yet.
+        return {"tables_created": [], "columns_added": [], "settings_seeded": []}
+
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     report = {"tables_created": [], "columns_added": [], "settings_seeded": []}
 

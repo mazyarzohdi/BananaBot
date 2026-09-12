@@ -3,12 +3,13 @@ import json
 import logging
 import secrets
 import time
+import os
 
-import aiosqlite
 from pathlib import Path
 
 from config import get_settings
 from db_schema import DEFAULT_SETTINGS, reconcile  # noqa: F401 (DEFAULT_SETTINGS kept for anything importing it from here)
+from database.db_driver import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,8 @@ class Database:
         self.path = path or settings.database_path
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
-    async def connect(self) -> aiosqlite.Connection:
-        conn = await aiosqlite.connect(self.path, timeout=30)
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    async def connect(self):
+        return await get_db_connection(self.path)
 
     async def init(self):
         # reconcile() is plain sync sqlite3 (see db_schema.py for why), so
@@ -450,8 +448,10 @@ class Database:
         now_ms = int(time.time() * 1000)
         threshold_ms = now_ms + days_before * 86400 * 1000
         return await self._fetchall(
-            "SELECT s.*, u.telegram_id, u.username FROM subscriptions s "
+            "SELECT s.*, u.telegram_id, u.username, u.balance as user_balance, p.price as product_price "
+            "FROM subscriptions s "
             "JOIN users u ON s.user_id = u.id "
+            "LEFT JOIN products p ON s.product_id = p.id "
             "WHERE s.status = 'active' AND s.expiry_time > ? AND s.expiry_time <= ? "
             "AND s.reminder_sent_at IS NULL",
             (now_ms, threshold_ms),
@@ -617,6 +617,7 @@ class Database:
         pending by the time this ran."""
         conn = await self.connect()
         try:
+            await conn.execute("BEGIN EXCLUSIVE")
             cursor = await conn.execute(
                 "UPDATE payments SET status = 'approved', admin_note = 'تایید خودکار (پیامک بانکی)' "
                 "WHERE id = ? AND status = 'pending'",
@@ -634,6 +635,9 @@ class Database:
             )
             await conn.commit()
             return payment
+        except Exception:
+            await conn.rollback()
+            raise
         finally:
             await conn.close()
 
@@ -838,23 +842,28 @@ class Database:
         """Atomic validation and consumption of a coupon in a single SQLite transaction."""
         conn = await self.connect()
         try:
+            await conn.execute("BEGIN EXCLUSIVE")
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute("SELECT * FROM coupons WHERE id = ?", (coupon_id,))
             coupon_row = await cursor.fetchone()
             if not coupon_row:
+                await conn.commit()
                 return False, 0, "❌ کوپن تخفیف یافت نشد."
             coupon = dict(coupon_row)
             if not coupon.get("is_active"):
+                await conn.commit()
                 return False, 0, "❌ این کوپن غیرفعال است."
             if coupon.get("expires_at"):
                 from datetime import datetime
                 try:
                     exp = datetime.fromisoformat(coupon["expires_at"])
                     if datetime.now() > exp:
+                        await conn.commit()
                         return False, 0, "❌ مدت اعتبار این کوپن به پایان رسیده است."
                 except ValueError:
                     pass
             if coupon.get("max_uses", 0) > 0 and coupon.get("used_count", 0) >= coupon["max_uses"]:
+                await conn.commit()
                 return False, 0, "❌ ظرفیت استفاده از این کوپن تکمیل شده است."
             if coupon.get("usage_type") in ("once_per_user", "one_time"):
                 cursor = await conn.execute(
@@ -863,6 +872,7 @@ class Database:
                 )
                 already = await cursor.fetchone()
                 if already:
+                    await conn.commit()
                     return False, 0, "❌ شما قبلاً از این کوپن استفاده کرده‌اید."
 
             discount = self.calc_discount(coupon, price)
@@ -876,6 +886,9 @@ class Database:
             )
             await conn.commit()
             return True, discount, ""
+        except Exception:
+            await conn.rollback()
+            raise
         finally:
             await conn.close()
 

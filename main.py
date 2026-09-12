@@ -81,11 +81,26 @@ async def _expiry_reminder_loop(bot: Bot, db):
                 subs = await db.get_subscriptions_due_for_reminder(days_before)
                 for sub in subs:
                     try:
-                        await bot.send_message(
-                            sub["telegram_id"],
-                            f"⏰ سرویس «{sub['email']}» شما تا {format_expiry(sub['expiry_time'])} "
-                            "منقضی می‌شود. برای جلوگیری از قطعی، از منوی «سرویس‌های من» تمدید کنید.",
-                        )
+                        if sub.get("auto_renew") == 1:
+                            price = sub.get("product_price")
+                            if price is not None and sub["user_balance"] < price:
+                                await bot.send_message(
+                                    sub["telegram_id"],
+                                    f"⚠️ سرویس «{sub['email']}» شما به‌زودی منقضی می‌شود و تمدید خودکار روشن است، "
+                                    f"اما موجودی کیف پول شما برای تمدید کافی نیست (موجودی: {sub['user_balance']:,} / هزینه: {price:,} تومان). "
+                                    "لطفاً پیش از اتمام زمان، کیف پول خود را شارژ کنید.",
+                                )
+                            else:
+                                await bot.send_message(
+                                    sub["telegram_id"],
+                                    f"⏰ سرویس «{sub['email']}» شما به‌زودی منقضی می‌شود و با توجه به فعال بودن تمدید خودکار، در زمان انقضا به‌طور خودکار تمدید خواهد شد.",
+                                )
+                        else:
+                            await bot.send_message(
+                                sub["telegram_id"],
+                                f"⏰ سرویس «{sub['email']}» شما تا {format_expiry(sub['expiry_time'])} "
+                                "منقضی می‌شود. برای جلوگیری از قطعی، از منوی «سرویس‌های من» تمدید کنید.",
+                            )
                     except Exception:
                         pass
                     await db.mark_subscription_reminder_sent(sub["id"])
@@ -166,6 +181,8 @@ async def _auto_renew_loop(bot: Bot, db):
                         pass
                 except Exception:
                     logger.exception("Auto-renew failed for subscription #%s", sub["id"])
+                    # On failure, disable auto-renew so it doesn't get stuck in a failure loop
+                    await db.set_subscription_auto_renew(sub["id"], False)
         except Exception:
             logger.exception("Auto-renew loop failed")
         await asyncio.sleep(AUTO_RENEW_CHECK_INTERVAL_SECONDS)

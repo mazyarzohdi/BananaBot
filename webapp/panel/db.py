@@ -11,18 +11,87 @@ from contextlib import contextmanager
 from django.conf import settings
 
 
+import os
+import psycopg2
+from psycopg2.extras import DictCursor
+
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(settings.BOT_DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    db_type = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+    
+    if db_type == "postgres":
+        conn = psycopg2.connect(
+            dbname=os.environ.get("DB_NAME", "bananabot"),
+            user=os.environ.get("DB_USER", "bananabot"),
+            password=os.environ.get("DB_PASS", ""),
+            host=os.environ.get("DB_HOST", "127.0.0.1"),
+            port=os.environ.get("DB_PORT", "5432"),
+            connect_timeout=5
+        )
+        # We need a wrapper to translate `?` to `%s` for execute calls
+        class CursorWrapper:
+            def __init__(self, c):
+                self._cursor = c
+            def execute(self, query, params=()):
+                # Translate ? to %s
+                parts = query.split('?')
+                if len(parts) > 1:
+                    query = "%s".join(parts)
+                query = query.replace("MAX(", "GREATEST(")
+                query = query.replace("datetime('now')", "CURRENT_TIMESTAMP")
+                query = query.replace("BEGIN EXCLUSIVE", "BEGIN")
+                if "ON CONFLICT(key) DO UPDATE" in query: # Handle sqlite upsert difference
+                    query = query.replace("ON CONFLICT(key) DO UPDATE SET", "ON CONFLICT(key) DO UPDATE SET")
+                self._cursor.execute(query, params)
+                return self
+            def fetchone(self):
+                row = self._cursor.fetchone()
+                return dict(row) if row else None
+            def fetchall(self):
+                return [dict(r) for r in self._cursor.fetchall()]
+            @property
+            def lastrowid(self):
+                try:
+                    return self._cursor.fetchone()[0] # requires RETURNING id
+                except:
+                    return 0
+            
+        class ConnWrapper:
+            def __init__(self, connection):
+                self._conn = connection
+            def execute(self, query, params=()):
+                cur = self._conn.cursor(cursor_factory=DictCursor)
+                if query.strip().upper().startswith("INSERT") and "RETURNING id" not in query:
+                    query += " RETURNING id"
+                return CursorWrapper(cur).execute(query, params)
+            def commit(self):
+                self._conn.commit()
+            def rollback(self):
+                self._conn.rollback()
+            def close(self):
+                self._conn.close()
+                
+        wrapper = ConnWrapper(conn)
+        try:
+            yield wrapper
+            wrapper.commit()
+        except Exception:
+            wrapper.rollback()
+            raise
+        finally:
+            wrapper.close()
+            
+    else:
+        conn = sqlite3.connect(settings.BOT_DB_PATH, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def row_to_dict(row):

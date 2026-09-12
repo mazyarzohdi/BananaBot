@@ -1087,6 +1087,108 @@ action_webapp_configure() {
     read -rp "  Press Enter to return..."
 }
 
+action_migrate_db() {
+    echo ""
+    echo -e "${BOLD}Database Migration (SQLite <-> PostgreSQL)${NC}"
+    echo "1) SQLite to PostgreSQL (Migrate to Postgres)"
+    echo "2) PostgreSQL to SQLite (Revert to SQLite)"
+    echo -n "Select direction (1/2 or 0 to cancel): "
+    read -r DIR_CHOICE
+    
+    local direction=""
+    local old_type=""
+    local new_type=""
+    if [[ "$DIR_CHOICE" == "1" ]]; then
+        direction="sqlite_to_pg"
+        old_type="sqlite"
+        new_type="postgres"
+    elif [[ "$DIR_CHOICE" == "2" ]]; then
+        direction="pg_to_sqlite"
+        old_type="postgres"
+        new_type="sqlite"
+    else
+        echo "Cancelled."
+        return
+    fi
+    
+    # Send a backup to the admin on Telegram before migration
+    if [[ "$old_type" == "sqlite" ]]; then
+        action_backup_db
+        local latest_backup
+        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null | head -n 1)
+        if [[ -n "$latest_backup" ]]; then
+            log "Sending backup to Telegram admin..."
+            local token
+            token=$(get_env_value "BOT_TOKEN")
+            local admin_ids
+            admin_ids=$(get_env_value "ADMIN_IDS" | tr -d '[]' | cut -d',' -f1)
+            
+            if [[ -n "$token" && -n "$admin_ids" ]]; then
+                curl -s -F chat_id="$admin_ids" -F document=@"$latest_backup" -F caption="Backup before migration to Postgres" "https://api.telegram.org/bot${token}/sendDocument" > /dev/null
+                success "Backup sent to Telegram."
+            else
+                warn "Could not send backup: Token or Admin ID missing."
+            fi
+        fi
+    fi
+    
+    # If migrating to Postgres and no Postgres config exists, generate it
+    local current_db_type
+    current_db_type=$(get_env_value "DB_TYPE")
+    if [[ "$new_type" == "postgres" && "$current_db_type" != "postgres" ]]; then
+        log "Setting up PostgreSQL..."
+        if ! command -v psql &>/dev/null; then
+            if command -v apt-get &>/dev/null; then
+                apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib
+            else
+                yum install -y postgresql-server postgresql-contrib
+            fi
+        fi
+        
+        if command -v systemctl &>/dev/null; then
+            if ! systemctl is-active --quiet postgresql; then
+                if command -v postgresql-setup &>/dev/null; then
+                    postgresql-setup initdb >/dev/null 2>&1 || true
+                fi
+                systemctl enable postgresql >/dev/null 2>&1
+                systemctl start postgresql >/dev/null 2>&1
+            fi
+        fi
+        
+        local db_pass
+        db_pass=$(openssl rand -hex 16)
+        sudo -u postgres psql -c "CREATE DATABASE bananabot;" >/dev/null 2>&1 || true
+        sudo -u postgres psql -c "CREATE USER bananabot WITH ENCRYPTED PASSWORD '$db_pass';" >/dev/null 2>&1 || true
+        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >/dev/null 2>&1 || true
+        sudo -u postgres psql -d bananabot -c "GRANT ALL ON SCHEMA public TO bananabot;" >/dev/null 2>&1 || true
+        
+        set_env_value "DB_TYPE" "postgres"
+        set_env_value "DB_NAME" "bananabot"
+        set_env_value "DB_USER" "bananabot"
+        set_env_value "DB_PASS" "$db_pass"
+        set_env_value "DB_HOST" "127.0.0.1"
+        set_env_value "DB_PORT" "5432"
+    elif [[ "$new_type" == "sqlite" ]]; then
+        set_env_value "DB_TYPE" "sqlite"
+    fi
+    
+    log "Stopping bot services to prevent data corruption during migration..."
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl stop "$WEBAPP_SERVICE" 2>/dev/null || true
+    
+    log "Running migration script ($direction)..."
+    if "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/database/migrate_db.py" --direction "$direction"; then
+        success "Migration completed successfully!"
+        action_restart
+        action_webapp_restart
+    else
+        error "Migration failed! Restoring original DB_TYPE to $current_db_type..."
+        set_env_value "DB_TYPE" "$current_db_type"
+        action_restart
+        action_webapp_restart
+    fi
+}
+
 # ------------------------------------------------------------
 run() {
     check_root

@@ -35,13 +35,28 @@ class SubscriptionService:
             raise ValueError("Inbound برای پنل تنظیم نشده")
 
         client = XUIClient(panel["url"], panel["api_token"])
-        email = generate_client_email(telegram_id)
         sub_id = generate_sub_id()
         on_hold = bool(panel.get("on_hold", 0))
         expiry_ms = compute_expiry_ms(
             product["duration_days"], on_hold=on_hold
         )
         volume_gb = product["volume_gb"]
+
+        # Insert pending subscription first to reserve DB ID
+        sub_db_id = await self.db.add_subscription(
+            user_id=user_id,
+            product_id=product["id"],
+            panel_id=panel["id"],
+            email="",  # Will update shortly
+            sub_id=sub_id,
+            volume_gb=volume_gb,
+            expiry_time=expiry_ms,
+            status="pending",
+            is_trial=1 if is_trial else 0,
+        )
+
+        email = f"u{telegram_id}_s{sub_db_id}"
+        await self.db.update_subscription(sub_db_id, email=email)
 
         try:
             await client.add_client(
@@ -55,25 +70,32 @@ class SubscriptionService:
                 on_hold=on_hold,
             )
         except XUIError as e:
-            logger.error("Failed to create client on panel: %s", e)
-            raise ValueError(f"خطا در ایجاد کانفیگ روی پنل: {e}") from e
+            logger.warning("add_client failed, checking panel for %s: %s", email, e)
+            try:
+                client_exists = await client.get_client(email)
+            except Exception:
+                client_exists = None
 
-        links = await client.get_client_links(email)
+            if not client_exists:
+                await self.db.update_subscription(sub_db_id, status="failed")
+                raise ValueError(f"خطا در ایجاد کانفیگ روی پنل: {e}") from e
+            else:
+                logger.info("Client %s exists on panel despite add_client error. Proceeding.", email)
+
+        try:
+            links = await client.get_client_links(email)
+        except Exception:
+            links = []
+
         config_link = links[0] if links else ""
         sub_link = self._build_sub_link(panel, sub_id)
 
-        sub_db_id = await self.db.add_subscription(
-            user_id=user_id,
-            product_id=product["id"],
-            panel_id=panel["id"],
-            email=email,
-            sub_id=sub_id,
-            volume_gb=volume_gb,
-            expiry_time=expiry_ms,
+        await self.db.update_subscription(
+            sub_db_id,
             config_link=config_link,
             config_links=json.dumps(links),
             sub_link=sub_link,
-            is_trial=1 if is_trial else 0,
+            status="active",
         )
 
         return {
@@ -181,7 +203,14 @@ class SubscriptionService:
         try:
             await client.update_client(sub["email"], update_payload)
         except XUIError as e:
-            raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
+            try:
+                check_client = await client.get_client(sub["email"])
+                if check_client and check_client.get("expiryTime") == new_expiry_ms:
+                    logger.info("Client %s updated despite error. Proceeding.", sub["email"])
+                else:
+                    raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
+            except Exception:
+                raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
 
         # ریست ترافیک مصرفی روی پنل
         try:
