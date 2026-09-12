@@ -1,9 +1,14 @@
 import argparse
 import asyncio
 import os
+import sys
 import sqlite3
 import asyncpg
 from pathlib import Path
+
+# Add the parent directory to sys.path so we can import config and db_schema
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from config import get_settings
 from db_schema import SCHEMA, get_dialect_schema
 
