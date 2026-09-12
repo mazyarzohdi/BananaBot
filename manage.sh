@@ -158,6 +158,7 @@ main_menu() {
     echo "   [21] 💾 Backup Database"
     echo "   [22] ♻️  Restore Database from Backup"
     echo "   [23] 🩺 Check / Repair Database Schema"
+    echo "   [27] 🔀 Migrate Database (SQLite <-> PostgreSQL)"
     echo ""
     echo -e "  ${BOLD}━━━ Advanced Operations ━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "   [24] 🔄 Update Bot from GitHub"
@@ -1226,6 +1227,7 @@ run() {
             24) action_update ;;
             25) action_update_manage_script ;;
             26) action_uninstall ;;
+            27) action_migrate_db ;;
             0)  echo "Goodbye! 👋"; exit 0 ;;
             *)  warn "Invalid selection." ;;
         esac
