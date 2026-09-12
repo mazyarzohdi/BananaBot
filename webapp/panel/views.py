@@ -116,6 +116,7 @@ def dashboard(request: HttpRequest):
         })
     else:
         subscriptions = bot_db.get_user_subscriptions(db_user["id"]) if db_user else []
+        annotate_user_subscriptions(subscriptions, db_user)
         products = bot_db.get_products(active_only=True)
         return render(request, "user/dashboard.html", {
             "tg_user": tg_user,
@@ -569,6 +570,83 @@ def admin_settings(request: HttpRequest):
 
 # ── User: Services ────────────────────────────────────────────────────────────
 
+def annotate_user_subscriptions(subscriptions: list[dict], db_user: dict | None = None) -> list[dict]:
+    now_ms = int(time.time() * 1000)
+    user_balance = db_user.get("balance", 0) if db_user else 0
+
+    for s in subscriptions:
+        s["expiry_display"] = reseller_core.format_expiry_ms(s.get("expiry_time") or 0)
+
+        # Check suspended states
+        raw_status = s.get("status") or "active"
+        is_suspended = False
+        suspended_reason = ""
+        status_label = "فعال"
+        badge_class = "badge-green"
+
+        if raw_status == "deleted":
+            is_suspended = True
+            suspended_reason = "حذف‌شده توسط ادمین"
+            status_label = "معلق (حذف توسط ادمین)"
+            badge_class = "badge-orange"
+        elif raw_status == "suspended":
+            is_suspended = True
+            suspended_reason = "تعلیق‌شده توسط مدیریت"
+            status_label = "معلق"
+            badge_class = "badge-orange"
+        elif s.get("expiry_time", 0) > 0 and now_ms >= s["expiry_time"]:
+            is_suspended = True
+            suspended_reason = "پایان مدت زمان اشتراک"
+            status_label = "معلق (پایان زمان)"
+            badge_class = "badge-orange"
+        else:
+            # Check traffic from X-UI if panel details are available
+            panel_url = s.get("panel_url")
+            api_token = s.get("panel_api_token")
+            if panel_url and api_token and s.get("email"):
+                try:
+                    traffic = xui_client.get_client_traffic(panel_url, api_token, s["email"], timeout=2.0)
+                    if traffic:
+                        up = traffic.get("up") or 0
+                        down = traffic.get("down") or 0
+                        total = traffic.get("total") or 0
+                        used_bytes = up + down
+                        used_gb = round(used_bytes / (1024 ** 3), 2)
+                        s["used_gb"] = used_gb
+                        s["total_gb"] = round(total / (1024 ** 3), 2) if total > 0 else s.get("volume_gb", 0)
+                        if traffic.get("enable") is False:
+                            is_suspended = True
+                            suspended_reason = "غیرفعال در سرور"
+                            status_label = "معلق"
+                            badge_class = "badge-orange"
+                        elif total > 0 and used_bytes >= total:
+                            is_suspended = True
+                            suspended_reason = "اتمام حجم اینترنت"
+                            status_label = "معلق (اتمام حجم)"
+                            badge_class = "badge-orange"
+                except Exception:
+                    pass
+
+        s["is_suspended"] = is_suspended
+        s["suspended_reason"] = suspended_reason
+        s["status_label"] = status_label
+        s["badge_class"] = badge_class
+
+        # Renewal eligibility
+        product_id = s.get("product_id")
+        price = s.get("product_price")
+        is_renewable = bool(product_id and price is not None) and not s.get("is_trial")
+        s["renewable"] = is_renewable
+        if is_renewable:
+            s["renew_price"] = price
+            s["renew_duration_days"] = s.get("product_duration_days") or 30
+            s["renew_volume_gb"] = s.get("product_volume_gb") or s.get("volume_gb", 0)
+            s["has_enough_balance"] = user_balance >= price
+            s["balance_deficit"] = max(0, price - user_balance)
+
+    return subscriptions
+
+
 @login_required
 def user_services(request: HttpRequest):
     tg_user = get_current_user(request)
@@ -577,10 +655,122 @@ def user_services(request: HttpRequest):
         messages.error(request, "حساب کاربری شما در ربات ثبت نشده. ابتدا ربات را استارت کنید.")
         return redirect("panel:dashboard")
     subscriptions = bot_db.get_user_subscriptions(db_user["id"])
+    annotate_user_subscriptions(subscriptions, db_user)
     return render(request, "user/services.html", {
         "subscriptions": subscriptions, "db_user": db_user,
         "tg_user": tg_user, "is_admin": is_admin(request),
     })
+
+
+@login_required
+@require_POST
+def user_service_renew(request: HttpRequest, sub_id: int):
+    tg_user = get_current_user(request)
+    db_user = bot_db.get_user_by_telegram_id(int(tg_user["id"]))
+    if not db_user:
+        messages.error(request, "حساب کاربری پیدا نشد.")
+        return redirect("panel:user_services")
+
+    sub = bot_db.get_subscription(sub_id)
+    if not sub or sub["user_id"] != db_user["id"]:
+        messages.error(request, "سرویس پیدا نشد یا متعلق به شما نیست.")
+        return redirect("panel:user_services")
+
+    if not sub.get("product_id"):
+        messages.error(request, "این سرویس به محصولی متصل نیست و امکان تمدید ندارد.")
+        return redirect("panel:user_services")
+
+    product = bot_db.get_product(sub["product_id"])
+    if not product:
+        messages.error(request, "محصول مربوط به این سرویس حذف شده است.")
+        return redirect("panel:user_services")
+
+    price = product["price"]
+    user_id = db_user["id"]
+
+    # Atomic balance deduction
+    with bot_db.get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
+            (price, user_id, price),
+        )
+        if cur.rowcount == 0:
+            messages.error(request, f"موجودی کیف پول شما کافی نیست. هزینه تمدید: {price:,} تومان.")
+            return redirect("panel:user_wallet")
+
+    panel = bot_db.get_panel(sub["panel_id"])
+    if not panel:
+        # Refund
+        with bot_db.get_conn() as conn:
+            conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (price, user_id))
+        messages.error(request, "پنل سرور مربوط به این سرویس در دسترس نیست.")
+        return redirect("panel:user_services")
+
+    on_hold = bool(panel.get("on_hold", 0))
+    new_expiry_ms = xui_client.compute_expiry_ms(product["duration_days"], on_hold=on_hold)
+    product_volume = product["volume_gb"] if product["volume_gb"] > 0 else sub["volume_gb"]
+    new_total_bytes = int(product_volume * (1024 ** 3))
+
+    try:
+        client_data = xui_client.get_client(panel["url"], panel["api_token"], sub["email"])
+        if client_data:
+            update_payload = {
+                **client_data,
+                "email": sub["email"],
+                "expiryTime": new_expiry_ms,
+                "totalGB": new_total_bytes,
+                "enable": True,
+            }
+            xui_client.update_client(panel["url"], panel["api_token"], sub["email"], update_payload)
+            try:
+                xui_client.reset_client_traffic(panel["url"], panel["api_token"], sub["email"])
+            except Exception:
+                pass
+        else:
+            # Re-create client on X-UI if it was removed
+            inbound_ids = json.loads(panel["inbound_ids"])
+            xui_client.add_client(
+                panel["url"], panel["api_token"], inbound_ids, sub["email"],
+                total_gb=product_volume, expiry_time_ms=new_expiry_ms,
+                sub_id=sub.get("sub_id") or "", tg_id=int(tg_user["id"]),
+                comment=f"bot_user_{tg_user['id']}", on_hold=on_hold,
+            )
+
+        links = xui_client.get_client_links(panel["url"], panel["api_token"], sub["email"])
+        config_link = links[0] if links else sub.get("config_link", "")
+
+        bot_db.update_subscription_record(
+            sub_id,
+            volume_gb=product_volume,
+            expiry_time=new_expiry_ms,
+            status="active",
+            config_link=config_link,
+            config_links=json.dumps(links),
+        )
+
+        bot_db.create_order(
+            user_id, product["id"], price, "balance",
+            f"تمدید از وب‌اپ: {product['name']} (سرویس #{sub_id})",
+        )
+
+        # Notify via Telegram
+        telegram_api.send_message(
+            int(tg_user["id"]),
+            f"🔁 سرویس «{sub['email']}» شما از طریق وب‌اپ با موفقیت تمدید شد.\n"
+            f"📊 حجم: {product_volume} GB\n"
+            f"⏱ انقضای جدید: {reseller_core.format_expiry_ms(new_expiry_ms)}\n"
+            f"💳 مبلغ: {price:,} تومان از کیف پول کسر شد.",
+        )
+
+        messages.success(request, f"✅ سرویس شما ({sub['email']}) با موفقیت تمدید و فعال شد!")
+    except Exception as e:
+        logger.exception("Error renewing subscription on panel: %s", e)
+        # Refund on error
+        with bot_db.get_conn() as conn:
+            conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (price, user_id))
+        messages.error(request, f"خطا در ارتباط با سرور برای تمدید: {e}")
+
+    return redirect("panel:user_services")
 
 
 @login_required

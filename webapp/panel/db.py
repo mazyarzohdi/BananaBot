@@ -235,7 +235,12 @@ def delete_panel(panel_id: int):
 def get_user_subscriptions(user_id: int) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT s.*, p.name as product_name, pn.name as panel_name "
+            "SELECT s.*, p.name as product_name, p.price as product_price, "
+            "p.duration_days as product_duration_days, p.volume_gb as product_volume_gb, "
+            "p.is_active as product_is_active, pn.name as panel_name, "
+            "pn.url as panel_url, pn.api_token as panel_api_token, "
+            "pn.inbound_ids as panel_inbound_ids, pn.on_hold as panel_on_hold, "
+            "pn.sub_link_template as panel_sub_link_template "
             "FROM subscriptions s "
             "LEFT JOIN products p ON s.product_id = p.id "
             "LEFT JOIN panels pn ON s.panel_id = pn.id "
@@ -254,12 +259,13 @@ def get_active_subscriptions_count() -> int:
 
 def get_subscription(sub_id: int) -> dict | None:
     """Mirrors database/db.py's async get_subscription join, so the panel
-    has everything needed (panel url/token, client email) to delete the
+    has everything needed (panel url/token, client email) to delete or renew the
     client on the actual x-ui panel, not just in our own DB."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT s.*, u.telegram_id, u.full_name, "
-            "pn.name as panel_name, pn.url as panel_url, pn.api_token "
+            "pn.name as panel_name, pn.url as panel_url, pn.api_token, "
+            "pn.inbound_ids, pn.on_hold, pn.sub_link_template "
             "FROM subscriptions s "
             "JOIN users u ON s.user_id = u.id "
             "JOIN panels pn ON s.panel_id = pn.id "
@@ -269,9 +275,36 @@ def get_subscription(sub_id: int) -> dict | None:
     return row_to_dict(row)
 
 
+def update_subscription_record(sub_id: int, **fields):
+    allowed = {
+        "volume_gb", "expiry_time", "config_link", "config_links",
+        "sub_link", "status", "sub_id", "reminder_sent_at",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    cols = ", ".join(f"{k}=?" for k in updates)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE subscriptions SET {cols} WHERE id=?", (*updates.values(), sub_id))
+
+
 def delete_subscription_record(sub_id: int):
     with get_conn() as conn:
         conn.execute("UPDATE subscriptions SET status='deleted' WHERE id=?", (sub_id,))
+
+
+def create_order(
+    user_id: int, product_id: int | None, amount: int, payment_method: str = "balance", description: str = ""
+) -> int:
+    import uuid
+    order_code = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO orders (user_id, product_id, order_code, amount, status, payment_method, description) "
+            "VALUES (?, ?, ?, ?, 'completed', ?, ?)",
+            (user_id, product_id, order_code, amount, payment_method, description),
+        )
+        return cur.lastrowid
 
 
 # ── Reseller plans ────────────────────────────────────────────────────────────

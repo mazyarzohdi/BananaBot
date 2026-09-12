@@ -34,12 +34,14 @@
   <h2 class="card-title">آخرین سرویس‌ها</h2>
   {% for s in subscriptions|slice:":3" %}
   <div class="service-row">
-    <div class="service-icon"><i class="fa fa-shield-halved"></i></div>
+    <div class="service-icon">
+      <i class="fa {% if s.is_suspended %}fa-circle-pause{% elif s.status == 'active' %}fa-shield-halved{% else %}fa-circle-xmark{% endif %}"></i>
+    </div>
     <div class="service-info">
       <div class="service-name">{{ s.product_name|default:"سرویس" }}</div>
-      <div class="service-meta">{{ s.panel_name }} — {{ s.status }}</div>
+      <div class="service-meta">{{ s.panel_name }} — {% if s.is_suspended %}{{ s.suspended_reason }}{% else %}{{ s.status_label|default:s.status }}{% endif %}</div>
     </div>
-    <span class="badge-{% if s.status == 'active' %}green{% else %}red{% endif %}">{{ s.status }}</span>
+    <span class="{{ s.badge_class|default:'badge-green' }}">{{ s.status_label|default:s.status }}</span>
   </div>
   {% endfor %}
   <a href="{% url 'panel:user_services' %}" class="btn btn-ghost mt-2">مشاهده همه ←</a>

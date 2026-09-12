@@ -15,6 +15,7 @@ urlpatterns = [
 
     # User
     path("services/", views.user_services, name="user_services"),
+    path("services/<int:sub_id>/renew/", views.user_service_renew, name="user_service_renew"),
     path("buy/",      views.user_buy,      name="user_buy"),
     path("wallet/",   views.user_wallet,   name="user_wallet"),
     path("reseller/", views.reseller_panel, name="reseller_panel"),

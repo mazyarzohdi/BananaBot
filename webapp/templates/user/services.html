@@ -7,18 +7,82 @@
 <div class="services-grid">
   {% for s in subscriptions %}
   <div class="service-card">
-    <div class="service-card-header {% if s.status == 'active' %}active{% else %}inactive{% endif %}">
-      <i class="fa fa-shield-halved"></i>
-      <span class="service-status">{% if s.status == 'active' %}● فعال{% else %}● {{ s.status }}{% endif %}</span>
+    <div class="service-card-header {% if s.is_suspended %}suspended{% elif s.status == 'active' %}active{% else %}inactive{% endif %}">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <i class="fa {% if s.is_suspended %}fa-circle-pause{% elif s.status == 'active' %}fa-shield-halved{% else %}fa-circle-xmark{% endif %}"></i>
+        <span class="service-status">{{ s.status_label|default:s.status }}</span>
+      </div>
+      <div>
+        {% if s.is_suspended %}
+          <span class="badge-orange">معلق</span>
+        {% elif s.status == 'active' %}
+          <span class="badge-green">فعال</span>
+        {% else %}
+          <span class="badge-red">{{ s.status }}</span>
+        {% endif %}
+      </div>
     </div>
     <div class="service-card-body">
       <h3>{{ s.product_name|default:"سرویس VPN" }}</h3>
-      <div class="service-detail"><i class="fa fa-desktop"></i> {{ s.panel_name|default:"—" }}</div>
-      <div class="service-detail"><i class="fa fa-envelope"></i> <code>{{ s.email }}</code></div>
-      <div class="service-detail"><i class="fa fa-calendar"></i> {{ s.created_at }}</div>
-      {% if s.sub_link %}
-      <a href="{{ s.sub_link }}" class="btn btn-sm btn-primary mt-2" target="_blank">
-        <i class="fa fa-link"></i> لینک سابسکریپشن
+      <div class="service-detail"><i class="fa fa-server"></i> پنل: {{ s.panel_name|default:"—" }}</div>
+      <div class="service-detail"><i class="fa fa-envelope"></i> شناسه: <code>{{ s.email }}</code></div>
+      <div class="service-detail"><i class="fa fa-calendar"></i> تاریخ ثبت: {{ s.created_at }}</div>
+
+      {% if s.is_suspended %}
+      <div class="service-alert-suspended">
+        <i class="fa fa-exclamation-triangle"></i>
+        <div>
+          <strong>سرویس به حالت تعلیق درآمده است:</strong>
+          <div style="margin-top: 2px;">{{ s.suspended_reason|default:"سرویس غیرفعال یا پایان یافته است." }}</div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if s.used_gb is not None and s.total_gb %}
+      <div class="service-progress-wrap">
+        <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); margin-bottom: 2px;">
+          <span>مصرف ترافیک:</span>
+          <span><strong>{{ s.used_gb }}</strong> / {{ s.total_gb }} GB</span>
+        </div>
+        <div class="service-progress-bar">
+          <div class="service-progress-fill {% if s.is_suspended %}warning{% endif %}" style="width: {% widthratio s.used_gb s.total_gb 100 %}%;"></div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if s.renewable %}
+      <div class="service-renew-box">
+        <div class="service-renew-header">
+          <span style="font-weight: 600;"><i class="fa fa-rotate-right" style="color: var(--primary);"></i> تمدید اشتراک</span>
+          <span class="service-renew-price">{{ s.renew_price|floatformat:0 }} تومان</span>
+        </div>
+        <div style="font-size: 12px; color: var(--text-secondary);">
+          مشخصات دوره تمدید: {{ s.renew_volume_gb }} GB ترافیک | {{ s.renew_duration_days }} روز اعتبار
+        </div>
+        {% if s.has_enough_balance %}
+        <form method="post" action="{% url 'panel:user_service_renew' s.id %}"
+          onsubmit="return confirm('آیا از تمدید این سرویس به مبلغ {{ s.renew_price|floatformat:0 }} تومان از موجودی حساب خود اطمینان دارید؟')">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-warning w-full" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <i class="fa fa-bolt"></i> تمدید سرویس
+          </button>
+        </form>
+        {% else %}
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-size: 11.5px; color: #f87171; display: flex; align-items: center; gap: 6px;">
+            <i class="fa fa-circle-exclamation"></i> موجودی کافی نیست (کسری: {{ s.balance_deficit|floatformat:0 }} تومان)
+          </div>
+          <a href="{% url 'panel:user_wallet' %}" class="btn btn-primary btn-sm w-full" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <i class="fa fa-wallet"></i> شارژ کیف پول جهت تمدید
+          </a>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if s.sub_link and not s.is_suspended %}
+      <a href="{{ s.sub_link }}" class="btn btn-sm btn-primary mt-2" target="_blank" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <i class="fa fa-link"></i> دریافت لینک سابسکریپشن
       </a>
       {% endif %}
     </div>
@@ -29,7 +93,7 @@
 <div class="card empty-card">
   <i class="fa fa-box-open fa-3x"></i>
   <p>هنوز سرویسی خریداری نکرده‌اید.</p>
-  <a href="{% url 'panel:user_buy' %}" class="btn btn-primary">خرید سرویس</a>
+  <a href="{% url 'panel:user_buy' %}" class="btn btn-primary">خرید سرویس جدید</a>
 </div>
 {% endif %}
 {% endblock %}
