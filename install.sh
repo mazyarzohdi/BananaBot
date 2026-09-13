@@ -179,6 +179,7 @@ init_postgres() {
         fi
         sudo -u postgres psql -c "CREATE DATABASE bananabot;" >> "$LOG_FILE" 2>&1 || true
         sudo -u postgres psql -c "CREATE USER bananabot WITH ENCRYPTED PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
+        sudo -u postgres psql -c "ALTER USER bananabot WITH ENCRYPTED PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
         sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >> "$LOG_FILE" 2>&1 || true
         sudo -u postgres psql -d bananabot -c "GRANT ALL ON SCHEMA public TO bananabot;" >> "$LOG_FILE" 2>&1 || true
         success "PostgreSQL configured."

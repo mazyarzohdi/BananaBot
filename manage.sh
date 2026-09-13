@@ -1160,6 +1160,7 @@ action_migrate_db() {
         db_pass=$(openssl rand -hex 16)
         sudo -u postgres psql -c "CREATE DATABASE bananabot;" >/dev/null 2>&1 || true
         sudo -u postgres psql -c "CREATE USER bananabot WITH ENCRYPTED PASSWORD '$db_pass';" >/dev/null 2>&1 || true
+        sudo -u postgres psql -c "ALTER USER bananabot WITH ENCRYPTED PASSWORD '$db_pass';" >/dev/null 2>&1 || true
         sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >/dev/null 2>&1 || true
         sudo -u postgres psql -d bananabot -c "GRANT ALL ON SCHEMA public TO bananabot;" >/dev/null 2>&1 || true
         
