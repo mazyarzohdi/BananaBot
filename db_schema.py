@@ -310,6 +310,7 @@ def get_dialect_schema(db_type: str = "sqlite") -> str:
     schema = SCHEMA
     if db_type == "postgres":
         schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        schema = schema.replace("telegram_id INTEGER", "telegram_id BIGINT")
         schema = schema.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
         schema = schema.replace("REAL", "DOUBLE PRECISION")
     return schema
@@ -470,6 +471,7 @@ def reconcile_postgres() -> dict:
                     col_name = col_def.split()[0]
                     if col_name not in existing_cols:
                         pg_col_def = col_def.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
+                        pg_col_def = pg_col_def.replace("telegram_id INTEGER", "telegram_id BIGINT")
                         pg_col_def = pg_col_def.replace("REAL", "DOUBLE PRECISION")
                         alter_sql = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {pg_col_def}"
                         try:
