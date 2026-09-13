@@ -315,6 +315,7 @@ def get_dialect_schema(db_type: str = "sqlite") -> str:
         schema = schema.replace("telegram_id INTEGER", "telegram_id BIGINT")
         schema = schema.replace("expiry_time INTEGER", "expiry_time BIGINT")
         schema = schema.replace("expires_at INTEGER", "expires_at BIGINT")
+        schema = schema.replace("handled_by INTEGER", "handled_by BIGINT")
         schema = schema.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
         schema = schema.replace("REAL", "DOUBLE PRECISION")
     return schema
@@ -478,6 +479,7 @@ def reconcile_postgres() -> dict:
                         pg_col_def = pg_col_def.replace("telegram_id INTEGER", "telegram_id BIGINT")
                         pg_col_def = pg_col_def.replace("expiry_time INTEGER", "expiry_time BIGINT")
                         pg_col_def = pg_col_def.replace("expires_at INTEGER", "expires_at BIGINT")
+                        pg_col_def = pg_col_def.replace("handled_by INTEGER", "handled_by BIGINT")
                         pg_col_def = pg_col_def.replace("REAL", "DOUBLE PRECISION")
                         alter_sql = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {pg_col_def}"
                         try:
