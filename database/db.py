@@ -284,7 +284,7 @@ class Database:
 
     async def set_setting(self, key: str, value: str):
         await self._execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
 
