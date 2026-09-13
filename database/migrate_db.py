@@ -44,6 +44,10 @@ def get_sqlite_conn(path):
     conn.row_factory = sqlite3.Row
     return conn
 
+def get_sqlite_tables(sl_conn):
+    rows = sl_conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+    return [r[0] for r in rows]
+
 async def get_tables(pg_conn):
     rows = await pg_conn.fetch("""
         SELECT table_name 
@@ -68,6 +72,7 @@ async def migrate_sqlite_to_postgres():
             
     tables = await get_tables(pg_conn)
     sl_conn = get_sqlite_conn(sqlite_path)
+    sl_tables = get_sqlite_tables(sl_conn)
     
     ordered_tables = ["settings", "users", "panels", "products", "reseller_plans", 
                       "coupons", "coupon_uses", "orders", "subscriptions", "resellers", 
@@ -75,13 +80,14 @@ async def migrate_sqlite_to_postgres():
     
     print("Migrating from SQLite to Postgres...")
     for table in ordered_tables:
-        if table not in tables:
+        if table not in tables or table not in sl_tables:
             continue
         print(f" -> Migrating table {table}...")
         await pg_conn.execute(f"TRUNCATE TABLE {table} CASCADE")
         
         rows = sl_conn.execute(f"SELECT * FROM {table}").fetchall()
         if not rows:
+            print(f"    (0 rows)")
             continue
             
         columns = rows[0].keys()
@@ -91,6 +97,7 @@ async def migrate_sqlite_to_postgres():
         
         values = [tuple(dict(r).values()) for r in rows]
         await pg_conn.executemany(query, values)
+        print(f"    (migrated {len(values)} rows)")
         
         if "id" in columns:
             try:
@@ -113,6 +120,13 @@ async def migrate_postgres_to_sqlite():
         if stmt.strip():
             sl_conn.execute(stmt)
             
+    tables = await get_tables(pg_conn)
+    if not tables:
+        print("Notice: No matching tables found in PostgreSQL to migrate from.")
+        await pg_conn.close()
+        return
+
+    sl_tables = get_sqlite_tables(sl_conn)
     ordered_tables = ["settings", "users", "panels", "products", "reseller_plans", 
                       "coupons", "coupon_uses", "orders", "subscriptions", "resellers", 
                       "payments", "trial_apps"]
@@ -120,13 +134,17 @@ async def migrate_postgres_to_sqlite():
     print("Migrating from Postgres to SQLite...")
     sl_conn.execute("PRAGMA foreign_keys = OFF")
     for table in ordered_tables:
-        print(f" -> Migrating table {table}...")
-        sl_conn.execute(f"DELETE FROM {table}")
-        
-        rows = await pg_conn.fetch(f"SELECT * FROM {table}")
-        if not rows:
+        if table not in tables or table not in sl_tables:
+            print(f" -> Skipping table {table} (not found in PostgreSQL)")
             continue
             
+        print(f" -> Migrating table {table}...")
+        rows = await pg_conn.fetch(f"SELECT * FROM {table}")
+        if not rows:
+            print(f"    (0 rows)")
+            continue
+            
+        sl_conn.execute(f"DELETE FROM {table}")
         columns = rows[0].keys()
         col_names = ", ".join(columns)
         placeholders = ", ".join("?" for _ in columns)
@@ -134,6 +152,7 @@ async def migrate_postgres_to_sqlite():
         
         values = [tuple(dict(r).values()) for r in rows]
         sl_conn.executemany(query, values)
+        print(f"    (migrated {len(values)} rows)")
         
     sl_conn.execute("PRAGMA foreign_keys = ON")
     sl_conn.commit()
