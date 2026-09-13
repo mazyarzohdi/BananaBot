@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS payments (
     handled_by INTEGER,
     notif_chats TEXT DEFAULT '[]',
     expected_amount INTEGER DEFAULT NULL,
+    coupon_code TEXT DEFAULT NULL,
+    discount_amount INTEGER DEFAULT 0,
     expires_at TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id),
