@@ -38,7 +38,9 @@ def get_conn():
                 if len(parts) > 1:
                     query = "%s".join(parts)
                 query = query.replace("MAX(", "GREATEST(")
-                query = query.replace("datetime('now')", "CURRENT_TIMESTAMP")
+                import re as _re
+                query = _re.sub(r"datetime\('now',\s*([^)]+)\)", r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(\1 AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')", query)
+                query = query.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
                 query = query.replace("date('now')", "CURRENT_DATE")
                 # Translate SQLite date(column) to Postgres (column)::DATE
                 import re as _re
@@ -68,7 +70,7 @@ def get_conn():
                 self._conn = connection
             def execute(self, query, params=()):
                 cur = self._conn.cursor(cursor_factory=DictCursor)
-                if query.strip().upper().startswith("INSERT") and "RETURNING id" not in query:
+                if query.strip().upper().startswith("INSERT") and "RETURNING id" not in query and "ON CONFLICT" not in query.upper():
                     query += " RETURNING id"
                 return CursorWrapper(cur).execute(query, params)
             def commit(self):

@@ -12,7 +12,9 @@ def _convert_query(query: str, db_type: str) -> str:
         for i, part in enumerate(parts[1:], 1):
             res += f"${i}" + part
     res = res.replace("MAX(", "GREATEST(")
-    res = res.replace("datetime('now')", "CURRENT_TIMESTAMP")
+    # Translate SQLite datetime('now', X) to Postgres CURRENT_TIMESTAMP + CAST(X AS INTERVAL)
+    res = re.sub(r"datetime\('now',\s*([^)]+)\)", r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(\1 AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')", res)
+    res = res.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
     res = res.replace("date('now')", "CURRENT_DATE")
     # Translate SQLite date(column) to Postgres (column)::DATE
     res = re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', res)
