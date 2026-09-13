@@ -40,7 +40,8 @@ async def get_tables(pg_conn):
 
 async def migrate_sqlite_to_postgres():
     settings = get_settings()
-    sqlite_path = settings.database_path
+    from config import BASE_DIR
+    sqlite_path = str(BASE_DIR / settings.database_path)
     
     pg_conn = await get_pg_conn()
     schema_pg = get_dialect_schema("postgres")
@@ -82,7 +83,8 @@ async def migrate_sqlite_to_postgres():
 
 async def migrate_postgres_to_sqlite():
     settings = get_settings()
-    sqlite_path = settings.database_path
+    from config import BASE_DIR
+    sqlite_path = str(BASE_DIR / settings.database_path)
     
     pg_conn = await get_pg_conn()
     sl_conn = get_sqlite_conn(sqlite_path)
