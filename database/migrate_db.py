@@ -65,6 +65,12 @@ async def migrate_sqlite_to_postgres():
     sqlite_path = str(BASE_DIR / settings.database_path)
     
     pg_conn = await get_pg_conn()
+    
+    # Drop existing tables to ensure schema updates (like BIGINT) are applied
+    existing_tables = await get_tables(pg_conn)
+    for t in existing_tables:
+        await pg_conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
+        
     schema_pg = get_dialect_schema("postgres")
     for stmt in schema_pg.split(';'):
         if stmt.strip():
