@@ -1350,6 +1350,7 @@ END
             return 1
         fi
         success "PostgreSQL authentication verified successfully!"
+    fi
         
     log "Stopping bot services to prevent data corruption during migration..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
