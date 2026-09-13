@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -203,14 +205,49 @@ def _safe_sqlite_backup(src_path: str, dest_path: str):
         src.close()
 
 
+def _safe_postgres_backup(dest_path: str, settings) -> bool:
+    """پشتیبان‌گیری استاندارد از دیتابیس PostgreSQL با استفاده از pg_dump.
+    پرچم‌های --clean و --if-exists باعث می‌شوند فایل پشتیبان به‌راحتی و بدون تداخل
+    جداول در آینده ریستور شود."""
+    env = os.environ.copy()
+    if settings.db_pass:
+        env["PGPASSWORD"] = settings.db_pass
+    cmd = [
+        "pg_dump",
+        "-h", str(settings.db_host),
+        "-p", str(settings.db_port),
+        "-U", str(settings.db_user),
+        "-d", str(settings.db_name),
+        "--clean",
+        "--if-exists",
+    ]
+    try:
+        with open(dest_path, "wb") as f:
+            res = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env=env, timeout=120)
+        if res.returncode == 0:
+            return True
+        # Fallback به دسترسی peer لینوکس در صورت اجرای محلی
+        if str(settings.db_host) in ("127.0.0.1", "localhost"):
+            with open(dest_path, "wb") as f:
+                res_peer = subprocess.run(
+                    ["runuser", "-u", "postgres", "--", "pg_dump", "--clean", "--if-exists", str(settings.db_name)],
+                    stdout=f, stderr=subprocess.PIPE, timeout=120,
+                )
+            if res_peer.returncode == 0:
+                return True
+        logger.error("pg_dump error: %s", res.stderr.decode("utf-8", errors="ignore"))
+        return False
+    except Exception:
+        logger.exception("Scheduled PostgreSQL backup failed")
+        return False
+
+
 async def _scheduled_backup_loop(bot: Bot, db):
-    """طبق فاصله‌ی زمانی تنظیم‌شده توسط ادمین، فقط از دیتابیس خود ربات
-    بکاپ می‌گیره، توی data/backups (با پیشوند auto_ که جدا از بکاپ‌های
-    دستی manage.sh باشه، ولی همچنان با الگوی bot_*.db سازگاره تا از طریق
-    منوی ریستور manage.sh هم قابل انتخاب باشه) ذخیره می‌کنه، به‌صورت بی‌صدا
-    (بدون نوتیفیکیشن) برای همه‌ی ادمین‌ها توی تلگرام می‌فرسته، و بکاپ‌های
-    خودکار قدیمی‌تر از حد نگه‌داری رو پاک می‌کنه."""
-    admin_ids = get_settings().admin_ids
+    """طبق فاصله‌ی زمانی تنظیم‌شده توسط ادمین، از دیتابیس ربات (SQLite یا PostgreSQL)
+    بکاپ می‌گیره، توی data/backups ذخیره می‌کنه، به‌صورت بی‌صدا برای همه‌ی ادمین‌ها در تلگرام می‌فرسته،
+    و بکاپ‌های خودکار قدیمی‌تر از حد نگه‌داری رو پاک می‌کنه."""
+    settings = get_settings()
+    admin_ids = settings.admin_ids
     while True:
         try:
             if await db.get_setting("backup_schedule_enabled", "0") == "1":
@@ -226,26 +263,45 @@ async def _scheduled_backup_loop(bot: Bot, db):
                 now = time.time()
                 if now - last_run >= interval_hours * 3600:
                     ts = time.strftime("%Y%m%d_%H%M%S")
-                    backups_dir = Path(db.path).parent / "backups"
+                    backups_dir = Path("data/backups")
                     backups_dir.mkdir(parents=True, exist_ok=True)
 
-                    bot_backup_path = backups_dir / f"bot_auto_{ts}.db"
-                    try:
-                        await asyncio.to_thread(_safe_sqlite_backup, db.path, str(bot_backup_path))
-                        with open(bot_backup_path, "rb") as f:
-                            bot_backup_bytes = f.read()
-                        for admin_id in admin_ids:
-                            try:
-                                await bot.send_document(
-                                    admin_id,
-                                    BufferedInputFile(bot_backup_bytes, filename=bot_backup_path.name),
-                                    caption=f"🗄 بکاپ خودکار دیتابیس ربات — {ts}",
-                                    disable_notification=True,
-                                )
-                            except Exception:
-                                pass
-                    except Exception:
-                        logger.exception("Scheduled bot.db backup failed")
+                    is_pg = getattr(settings, "db_type", "sqlite").strip().lower() == "postgres"
+                    if is_pg:
+                        bot_backup_path = backups_dir / f"bot_pg_auto_{ts}.sql"
+                        caption = f"🗄 بکاپ خودکار دیتابیس PostgreSQL ربات — {ts}"
+                        glob_pattern = "bot_pg_auto_*.sql"
+                        success = await asyncio.to_thread(_safe_postgres_backup, str(bot_backup_path), settings)
+                    else:
+                        bot_backup_path = backups_dir / f"bot_auto_{ts}.db"
+                        caption = f"🗄 بکاپ خودکار دیتابیس SQLite ربات — {ts}"
+                        glob_pattern = "bot_auto_*.db"
+                        try:
+                            await asyncio.to_thread(_safe_sqlite_backup, db.path, str(bot_backup_path))
+                            success = True
+                        except Exception:
+                            logger.exception("Scheduled SQLite backup failed")
+                            success = False
+
+                    if success and bot_backup_path.exists() and bot_backup_path.stat().st_size > 0:
+                        try:
+                            with open(bot_backup_path, "rb") as f:
+                                bot_backup_bytes = f.read()
+                            for admin_id in admin_ids:
+                                try:
+                                    await bot.send_document(
+                                        admin_id,
+                                        BufferedInputFile(bot_backup_bytes, filename=bot_backup_path.name),
+                                        caption=caption,
+                                        disable_notification=True,
+                                    )
+                                except Exception:
+                                    pass
+                        except Exception:
+                            logger.exception("Sending scheduled backup to admins failed")
+                    elif not success:
+                        if bot_backup_path.exists():
+                            bot_backup_path.unlink()
 
                     # retention: keep only the newest N auto-backups
                     try:
@@ -253,7 +309,7 @@ async def _scheduled_backup_loop(bot: Bot, db):
                     except ValueError:
                         retention = 14
                     files = sorted(
-                        backups_dir.glob("bot_auto_*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+                        backups_dir.glob(glob_pattern), key=lambda p: p.stat().st_mtime, reverse=True
                     )
                     for old_file in files[retention:]:
                         try:

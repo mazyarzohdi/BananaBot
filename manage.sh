@@ -499,7 +499,30 @@ action_update() {
     # --- Safety backup, taken with everything stopped (quiescent DB) ---
     local safety_dest=""
     local had_existing_db=0
-    if [[ -f "$DB_PATH" ]]; then
+    local cur_db_type
+    cur_db_type=$(get_env_value "DB_TYPE")
+    cur_db_type="${cur_db_type:-sqlite}"
+
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        local safety_ts
+        safety_ts=$(date +%Y%m%d_%H%M%S)
+        safety_dest="$BACKUP_DIR/bot_pg_${safety_ts}_before-update.sql"
+        mkdir -p "$BACKUP_DIR"
+        local db_name db_user db_pass db_host db_port
+        db_name=$(get_env_value "DB_NAME"); db_name="${db_name:-bananabot}"
+        db_user=$(get_env_value "DB_USER"); db_user="${db_user:-bananabot}"
+        db_pass=$(get_env_value "DB_PASS" | tr -d '"'\'' ')
+        db_host=$(get_env_value "DB_HOST"); db_host="${db_host:-127.0.0.1}"
+        db_port=$(get_env_value "DB_PORT"); db_port="${db_port:-5432}"
+
+        if PGPASSWORD="$db_pass" pg_dump -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" --clean --if-exists > "$safety_dest" 2>/dev/null || \
+           runuser -u postgres -- pg_dump "$db_name" --clean --if-exists > "$safety_dest" 2>/dev/null; then
+            success "Safety copy of PostgreSQL database saved to: $safety_dest"
+            had_existing_db=1
+        else
+            warn "Could not take PostgreSQL safety backup before update — continuing anyway."
+        fi
+    elif [[ -f "$DB_PATH" ]]; then
         local safety_ts
         safety_ts=$(date +%Y%m%d_%H%M%S)
         safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-update.db"
@@ -550,29 +573,32 @@ finally:
         rm -f "/tmp/.env.webapp.bak"
     fi
 
-    # بازگرداندن دیتابیس فعال از روی نسخه بک‌آپ گرفته‌شده
-    # (جلوگیری از جایگزین شدن دیتابیس فعال با دیتابیس خام گیت‌هاب پس از git reset --hard)
-    if [[ "$had_existing_db" -eq 1 && -n "$safety_dest" && -f "$safety_dest" ]]; then
-        log "Restoring active database from pre-update backup..."
-        rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
-        cp "$safety_dest" "$DB_PATH"
-        success "Active database restored from pre-update backup."
-    elif [[ -f "/tmp/.bot.db.bananabot.bak" ]]; then
-        log "Restoring active database from temporary backup..."
-        rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
-        cp "/tmp/.bot.db.bananabot.bak" "$DB_PATH"
-        success "Active database restored from temporary backup."
+    if [[ "$cur_db_type" != "postgres" ]]; then
+        # بازگرداندن دیتابیس فعال از روی نسخه بک‌آپ گرفته‌شده (برای SQLite)
+        if [[ "$had_existing_db" -eq 1 && -n "$safety_dest" && -f "$safety_dest" ]]; then
+            log "Restoring active database from pre-update backup..."
+            rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
+            cp "$safety_dest" "$DB_PATH"
+            success "Active database restored from pre-update backup."
+        elif [[ -f "/tmp/.bot.db.bananabot.bak" ]]; then
+            log "Restoring active database from temporary backup..."
+            rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
+            cp "/tmp/.bot.db.bananabot.bak" "$DB_PATH"
+            success "Active database restored from temporary backup."
+        fi
+        rm -f "/tmp/.bot.db.bananabot.bak"
     fi
-    rm -f "/tmp/.bot.db.bananabot.bak"
 
     # به‌روزرسانی کتابخانه‌ها
     log "Updating Python libraries..."
     "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
     log "Checking/repairing database schema..."
-    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
-
-    if [[ -f "$DB_PATH" ]]; then
-        post_integrity=$("$INSTALL_DIR/.venv/bin/python" -c "
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py"
+    else
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+        if [[ -f "$DB_PATH" ]]; then
+            post_integrity=$("$INSTALL_DIR/.venv/bin/python" -c "
 import sqlite3
 con = sqlite3.connect('$DB_PATH')
 try:
@@ -580,12 +606,13 @@ try:
 finally:
     con.close()
 " 2>&1) || post_integrity="check failed to run: $post_integrity"
-        if [[ "$post_integrity" == "ok" ]]; then
-            success "Database integrity check after update: ok."
-        else
-            error "Database integrity check AFTER update reports: $post_integrity"
-            error "If this looks wrong, restore the safety copy taken above:"
-            error "  cp \"${safety_dest:-<safety file>}\" \"$DB_PATH\""
+            if [[ "$post_integrity" == "ok" ]]; then
+                success "Database integrity check after update: ok."
+            else
+                error "Database integrity check AFTER update reports: $post_integrity"
+                error "If this looks wrong, restore the safety copy taken above:"
+                error "  cp \"${safety_dest:-<safety file>}\" \"$DB_PATH\""
+            fi
         fi
     fi
 
@@ -752,45 +779,89 @@ _sqlite_backup_file() {
 
 action_backup_db() {
     echo ""
-    if [[ ! -f "$DB_PATH" ]]; then
-        error "No database found at $DB_PATH yet."
-        return
-    fi
+    local cur_db_type
+    cur_db_type=$(get_env_value "DB_TYPE")
+    cur_db_type="${cur_db_type:-sqlite}"
     mkdir -p "$BACKUP_DIR"
-    local ts dest
+
+    local ts
     ts=$(date +%Y%m%d_%H%M%S)
-    dest="$BACKUP_DIR/bot_${ts}.db"
 
-    log "Backing up database..."
-    if _sqlite_backup_file "$DB_PATH" "$dest"; then
-        success "Backup saved: $dest ($(du -h "$dest" | cut -f1))"
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        local dest="$BACKUP_DIR/bot_pg_${ts}.sql"
+        local db_name db_user db_pass db_host db_port
+        db_name=$(get_env_value "DB_NAME"); db_name="${db_name:-bananabot}"
+        db_user=$(get_env_value "DB_USER"); db_user="${db_user:-bananabot}"
+        db_pass=$(get_env_value "DB_PASS" | tr -d '"'\'' ')
+        db_host=$(get_env_value "DB_HOST"); db_host="${db_host:-127.0.0.1}"
+        db_port=$(get_env_value "DB_PORT"); db_port="${db_port:-5432}"
+
+        log "Backing up PostgreSQL database ($db_name)..."
+        if PGPASSWORD="$db_pass" pg_dump -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" --clean --if-exists > "$dest" 2>/dev/null; then
+            success "PostgreSQL backup saved: $dest ($(du -h "$dest" | cut -f1))"
+        elif runuser -u postgres -- pg_dump "$db_name" --clean --if-exists > "$dest" 2>/dev/null; then
+            success "PostgreSQL backup saved: $dest ($(du -h "$dest" | cut -f1))"
+        else
+            error "PostgreSQL backup failed."
+            rm -f "$dest"
+            return
+        fi
+
+        local count
+        count=$(ls -1 "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | wc -l)
+        if [[ "$count" -gt 15 ]]; then
+            ls -1t "$BACKUP_DIR"/bot_pg_*.sql | tail -n +16 | xargs -r rm -f
+            log "Older PostgreSQL backups trimmed (keeping the 15 most recent)."
+        fi
     else
-        error "Backup failed."
-        return
-    fi
+        if [[ ! -f "$DB_PATH" ]]; then
+            error "No database found at $DB_PATH yet."
+            return
+        fi
+        local dest="$BACKUP_DIR/bot_${ts}.db"
 
-    # Keep the last 15 backups only, so this directory doesn't grow forever.
-    local count
-    count=$(ls -1 "$BACKUP_DIR"/bot_*.db 2>/dev/null | wc -l)
-    if [[ "$count" -gt 15 ]]; then
-        ls -1t "$BACKUP_DIR"/bot_*.db | tail -n +16 | xargs -r rm -f
-        log "Older backups trimmed (keeping the 15 most recent)."
+        log "Backing up SQLite database..."
+        if _sqlite_backup_file "$DB_PATH" "$dest"; then
+            success "Backup saved: $dest ($(du -h "$dest" | cut -f1))"
+        else
+            error "Backup failed."
+            return
+        fi
+
+        local count
+        count=$(ls -1 "$BACKUP_DIR"/bot_*.db 2>/dev/null | wc -l)
+        if [[ "$count" -gt 15 ]]; then
+            ls -1t "$BACKUP_DIR"/bot_*.db | tail -n +16 | xargs -r rm -f
+            log "Older backups trimmed (keeping the 15 most recent)."
+        fi
     fi
 }
 
 action_restore_db() {
     echo ""
     mkdir -p "$BACKUP_DIR"
-    local backups=()
-    while IFS= read -r f; do backups+=("$f"); done < <(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null)
+    local cur_db_type
+    cur_db_type=$(get_env_value "DB_TYPE")
+    cur_db_type="${cur_db_type:-sqlite}"
 
-    if [[ ${#backups[@]} -eq 0 ]]; then
-        warn "No backups found in $BACKUP_DIR yet. Use 'Backup Database' first,"
-        warn "or copy an older bot.db file into that folder before restoring."
-        return
+    local backups=()
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        while IFS= read -r f; do backups+=("$f"); done < <(ls -1t "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null)
+        if [[ ${#backups[@]} -eq 0 ]]; then
+            warn "No PostgreSQL backups found in $BACKUP_DIR yet."
+            warn "Use 'Backup Database' first or place a .sql backup in $BACKUP_DIR."
+            return
+        fi
+    else
+        while IFS= read -r f; do backups+=("$f"); done < <(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null)
+        if [[ ${#backups[@]} -eq 0 ]]; then
+            warn "No SQLite backups found in $BACKUP_DIR yet. Use 'Backup Database' first,"
+            warn "or copy an older bot.db file into that folder before restoring."
+            return
+        fi
     fi
 
-    echo -e "  ${BOLD}Available backups:${NC}"
+    echo -e "  ${BOLD}Available backups (${cur_db_type}):${NC}"
     local i=1
     for f in "${backups[@]}"; do
         echo "   [$i] $(basename "$f")  ($(du -h "$f" | cut -f1))"
@@ -826,46 +897,50 @@ action_restore_db() {
         log "Stopping web panel..."
         systemctl stop "$WEBAPP_SERVICE"
     fi
-    # payment_webhook_server.py (bananabot-webhook) is a THIRD process that
-    # opens its own connections straight to bot.db (see get_conn() there) —
-    # independent of the bot and web panel. Leaving it running while we
-    # swap the database file out from under it is exactly what causes
-    # "database is locked" moments later, when reconcile()/migrate try to
-    # grab a brief exclusive lock to fix up the schema.
     if systemctl is-active --quiet "$WEBHOOK_SERVICE" 2>/dev/null; then
         webhook_was_running=1
         log "Stopping auto-payment webhook service..."
         systemctl stop "$WEBHOOK_SERVICE"
     fi
 
-    if [[ -f "$DB_PATH" ]]; then
-        mkdir -p "$BACKUP_DIR"
-        local safety_ts safety_dest
-        safety_ts=$(date +%Y%m%d_%H%M%S)
-        safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-restore.db"
-        _sqlite_backup_file "$DB_PATH" "$safety_dest" \
-            && log "Current database saved to: $safety_dest"
-    fi
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        log "Taking safety backup of current PostgreSQL database..."
+        action_backup_db
 
-    log "Restoring $(basename "$chosen")..."
-    # reconcile() always turns on WAL mode (see db_schema.py), so the live
-    # DB almost always has live.db-wal/-shm sidecar files next to it. If the
-    # bot/webapp were killed (systemctl stop -> SIGTERM) without a chance to
-    # cleanly checkpoint, those sidecars can be left on disk holding frames
-    # that belong to the database we're about to REPLACE. A plain `cp` only
-    # overwrites the main file — the stale -wal/-shm are still sitting there
-    # afterwards, and SQLite will try to replay them onto the new file on
-    # next open. Depending on how the page layouts happen to line up, that
-    # either silently resurrects old (pre-restore) data or corrupts the file
-    # outright ("database disk image is malformed"). Since we've got a
-    # confirmed-good chosen backup file, it's always correct to drop these
-    # before copying it in.
-    rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
-    cp "$chosen" "$DB_PATH"
-    success "Database file restored."
+        log "Restoring PostgreSQL database from $(basename "$chosen")..."
+        local db_name db_user db_pass db_host db_port
+        db_name=$(get_env_value "DB_NAME"); db_name="${db_name:-bananabot}"
+        db_user=$(get_env_value "DB_USER"); db_user="${db_user:-bananabot}"
+        db_pass=$(get_env_value "DB_PASS" | tr -d '"'\'' ')
+        db_host=$(get_env_value "DB_HOST"); db_host="${db_host:-127.0.0.1}"
+        db_port=$(get_env_value "DB_PORT"); db_port="${db_port:-5432}"
 
-    log "Verifying restored database integrity..."
-    integrity_result=$("$INSTALL_DIR/.venv/bin/python" -c "
+        if PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" < "$chosen" >/dev/null 2>&1; then
+            success "PostgreSQL database restored successfully."
+        elif runuser -u postgres -- psql -d "$db_name" < "$chosen" >/dev/null 2>&1; then
+            success "PostgreSQL database restored successfully."
+        else
+            error "PostgreSQL restore failed."
+        fi
+
+        log "Checking/repairing PostgreSQL schema and syncing sequences..."
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py"
+    else
+        if [[ -f "$DB_PATH" ]]; then
+            local safety_ts safety_dest
+            safety_ts=$(date +%Y%m%d_%H%M%S)
+            safety_dest="$BACKUP_DIR/bot_${safety_ts}_before-restore.db"
+            _sqlite_backup_file "$DB_PATH" "$safety_dest" \
+                && log "Current database saved to: $safety_dest"
+        fi
+
+        log "Restoring $(basename "$chosen")..."
+        rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
+        cp "$chosen" "$DB_PATH"
+        success "Database file restored."
+
+        log "Verifying restored database integrity..."
+        integrity_result=$("$INSTALL_DIR/.venv/bin/python" -c "
 import sqlite3
 con = sqlite3.connect('$DB_PATH')
 try:
@@ -873,28 +948,16 @@ try:
 finally:
     con.close()
 " 2>&1) || integrity_result="check failed to run: $integrity_result"
-    if [[ "$integrity_result" == "ok" ]]; then
-        success "Integrity check passed."
-    else
-        error "Integrity check FAILED: $integrity_result"
-        error "The restored file may be corrupt. Your pre-restore database was saved to:"
-        error "  ${safety_dest:-$BACKUP_DIR (see above)}"
-        error "Consider restoring a different backup, or copying that safety file back manually:"
-        error "  cp \"${safety_dest:-<safety file>}\" \"$DB_PATH\""
+        if [[ "$integrity_result" == "ok" ]]; then
+            success "Integrity check passed."
+        else
+            error "Integrity check FAILED: $integrity_result"
+        fi
+
+        log "Checking/repairing database schema against the current code..."
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
     fi
 
-    # This is the step that matters most: the backup may be from an older
-    # version of the bot, so its schema could be missing tables/columns
-    # the CURRENT code expects. Reconcile brings it up to date automatically.
-    log "Checking/repairing database schema against the current code..."
-    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
-
-    # The restored backup may predate the web panel entirely (or predate a
-    # Django app being added), in which case Django's own auth_*/
-    # django_session tables — a completely separate schema that
-    # db_schema.py knows nothing about — would be missing from it. Those
-    # get queried on EVERY web panel request, so without this the panel
-    # would 500 immediately on restart. Run this BEFORE starting it back up.
     if [[ -f "$WEBAPP_ENV" ]]; then
         load_webapp_lib
         webapp_sync_db_schema
@@ -917,12 +980,22 @@ finally:
 
 action_check_db_schema() {
     echo ""
-    if [[ ! -f "$DB_PATH" ]]; then
-        error "No database found at $DB_PATH yet."
-        return
+    local cur_db_type
+    cur_db_type=$(get_env_value "DB_TYPE")
+    cur_db_type="${cur_db_type:-sqlite}"
+
+    if [[ "$cur_db_type" == "postgres" ]]; then
+        log "Checking PostgreSQL database schema against the current code..."
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py"
+    else
+        if [[ ! -f "$DB_PATH" ]]; then
+            error "No database found at $DB_PATH yet."
+            return
+        fi
+        log "Checking SQLite database schema against the current code..."
+        "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
     fi
-    log "Checking database schema against the current code..."
-    "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/db_schema.py" "$DB_PATH"
+
     if [[ -f "$WEBAPP_ENV" ]]; then
         load_webapp_lib
         webapp_sync_db_schema
@@ -1113,23 +1186,28 @@ action_migrate_db() {
     fi
     
     # Send a backup to the admin on Telegram before migration
+    action_backup_db
+    local latest_backup
+    local backup_caption
     if [[ "$old_type" == "sqlite" ]]; then
-        action_backup_db
-        local latest_backup
         latest_backup=$(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null | head -n 1)
-        if [[ -n "$latest_backup" ]]; then
-            log "Sending backup to Telegram admin..."
-            local token
-            token=$(get_env_value "BOT_TOKEN")
-            local admin_ids
-            admin_ids=$(get_env_value "ADMIN_IDS" | tr -d '[]' | cut -d',' -f1)
-            
-            if [[ -n "$token" && -n "$admin_ids" ]]; then
-                curl -s -F chat_id="$admin_ids" -F document=@"$latest_backup" -F caption="Backup before migration to Postgres" "https://api.telegram.org/bot${token}/sendDocument" > /dev/null
-                success "Backup sent to Telegram."
-            else
-                warn "Could not send backup: Token or Admin ID missing."
-            fi
+        backup_caption="Backup before migration to Postgres (SQLite)"
+    else
+        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | head -n 1)
+        backup_caption="Backup before migration to SQLite (PostgreSQL)"
+    fi
+    if [[ -n "$latest_backup" ]]; then
+        log "Sending backup to Telegram admin..."
+        local token
+        token=$(get_env_value "BOT_TOKEN")
+        local admin_ids
+        admin_ids=$(get_env_value "ADMIN_IDS" | tr -d '[]' | cut -d',' -f1)
+        
+        if [[ -n "$token" && -n "$admin_ids" ]]; then
+            curl -s -F chat_id="$admin_ids" -F document=@"$latest_backup" -F caption="$backup_caption" "https://api.telegram.org/bot${token}/sendDocument" > /dev/null
+            success "Backup sent to Telegram."
+        else
+            warn "Could not send backup: Token or Admin ID missing."
         fi
     fi
     

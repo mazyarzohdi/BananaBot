@@ -411,17 +411,125 @@ def parse_schema_columns(schema_sql: str = SCHEMA) -> dict[str, list[str]]:
     return tables
 
 
-def reconcile(db_path: str) -> dict:
+def reconcile_postgres() -> dict:
+    """Reconcile PostgreSQL schema: create missing tables, add missing columns,
+    and seed missing DEFAULT_SETTINGS."""
+    report = {"tables_created": [], "columns_added": [], "settings_seeded": [], "sequences_synced": []}
+    try:
+        import asyncio
+        import asyncpg
+    except ImportError:
+        return report
+
+    async def _async_reconcile():
+        from config import get_settings
+        settings = get_settings()
+        db_name = os.environ.get("DB_NAME") or getattr(settings, "db_name", "bananabot")
+        db_user = os.environ.get("DB_USER") or getattr(settings, "db_user", "bananabot")
+        db_pass = os.environ.get("DB_PASS") or getattr(settings, "db_pass", "")
+        db_host = os.environ.get("DB_HOST") or getattr(settings, "db_host", "127.0.0.1")
+        db_port = os.environ.get("DB_PORT") or getattr(settings, "db_port", "5432")
+
+        conn = await asyncpg.connect(
+            database=db_name,
+            user=db_user,
+            password=db_pass,
+            host=db_host,
+            port=db_port,
+            timeout=15.0
+        )
+        try:
+            # 1. Ensure dialect schema tables exist
+            schema_pg = get_dialect_schema("postgres")
+            for stmt in schema_pg.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    try:
+                        await conn.execute(stmt)
+                    except Exception:
+                        pass
+
+            # 2. Get existing tables
+            rows = await conn.fetch("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+            existing_tables = {r["table_name"] for r in rows}
+
+            # 3. Add any missing columns
+            expected = parse_schema_columns(SCHEMA)
+            for table_name, expected_cols in expected.items():
+                if table_name not in existing_tables:
+                    report["tables_created"].append(table_name)
+                    continue
+
+                col_rows = await conn.fetch(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1",
+                    table_name
+                )
+                existing_cols = {r["column_name"] for r in col_rows}
+
+                for col_def in expected_cols:
+                    col_name = col_def.split()[0]
+                    if col_name not in existing_cols:
+                        pg_col_def = col_def.replace("datetime('now')", "CURRENT_TIMESTAMP")
+                        pg_col_def = pg_col_def.replace("REAL", "DOUBLE PRECISION")
+                        alter_sql = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {pg_col_def}"
+                        try:
+                            await conn.execute(alter_sql)
+                            report["columns_added"].append(f"{table_name}.{col_name}")
+                        except Exception:
+                            pass
+
+            # 4. Seed DEFAULT_SETTINGS
+            for key, value in DEFAULT_SETTINGS.items():
+                try:
+                    res = await conn.execute(
+                        "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+                        key,
+                        str(value)
+                    )
+                    if "INSERT 0 1" in res:
+                        report["settings_seeded"].append(key)
+                except Exception:
+                    pass
+
+            # 5. Synchronize primary key sequences for PostgreSQL tables
+            for table_name in existing_tables:
+                try:
+                    cols = [c.split()[0] for c in expected.get(table_name, [])]
+                    if "id" in cols:
+                        seq_res = await conn.fetchval(
+                            f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM {table_name}"
+                        )
+                        if seq_res is not None:
+                            report["sequences_synced"].append(table_name)
+                except Exception:
+                    pass
+        finally:
+            await conn.close()
+
+    try:
+        asyncio.run(_async_reconcile())
+    except Exception as e:
+        print(f"PostgreSQL reconciliation note: {e}")
+
+    return report
+
+
+def reconcile(db_path: str = "data/bot.db") -> dict:
     """Bring an existing (possibly old/restored-from-backup) database up to
     date with the current SCHEMA: create any missing tables, add any
     missing columns, apply legacy MIGRATIONS, and seed any DEFAULT_SETTINGS
     that aren't already present. Returns a report of what changed so
     callers (e.g. manage.sh) can show the admin what happened."""
-    db_type = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+    db_type = os.environ.get("DB_TYPE", "").strip().lower()
+    if not db_type:
+        try:
+            from config import get_settings
+            db_type = getattr(get_settings(), "db_type", "sqlite").strip().lower()
+        except Exception:
+            db_type = "sqlite"
+
     if db_type == "postgres":
-        # Postgres setup is handled by install.sh / migrate script.
-        # We don't reconcile postgres schemas yet.
-        return {"tables_created": [], "columns_added": [], "settings_seeded": []}
+        return reconcile_postgres()
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     report = {"tables_created": [], "columns_added": [], "settings_seeded": []}
@@ -570,13 +678,30 @@ def reconcile(db_path: str) -> dict:
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "data/bot.db"
-    print(f"Reconciling schema for: {target}")
-    result = reconcile(target)
+    db_type = os.environ.get("DB_TYPE", "").strip().lower()
+    if not db_type:
+        try:
+            from config import get_settings
+            db_type = getattr(get_settings(), "db_type", "sqlite").strip().lower()
+        except Exception:
+            db_type = "sqlite"
+
+    if db_type == "postgres":
+        print("Reconciling schema for: PostgreSQL database")
+        result = reconcile()
+    else:
+        target = sys.argv[1] if len(sys.argv) > 1 else "data/bot.db"
+        print(f"Reconciling schema for: {target}")
+        result = reconcile(target)
+
     if result["tables_created"]:
         print(f"  + Tables created: {', '.join(result['tables_created'])}")
     if result["columns_added"]:
         print(f"  + Columns added: {', '.join(result['columns_added'])}")
+    if result.get("settings_seeded"):
+        print(f"  + Default settings seeded: {len(result['settings_seeded'])} keys")
+    if result.get("sequences_synced"):
+        print(f"  + Sequences synchronized: {len(result['sequences_synced'])} tables")
     if result.get("failed"):
         print(f"  ! Columns that could NOT be added automatically: {', '.join(result['failed'])}")
     if result.get("migrated"):
@@ -585,5 +710,6 @@ if __name__ == "__main__":
     if (
         not result["tables_created"] and not result["columns_added"]
         and not result.get("failed") and not result.get("migrated")
+        and not result.get("sequences_synced")
     ):
         print("  Already up to date — no changes needed.")
