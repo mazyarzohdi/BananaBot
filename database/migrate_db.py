@@ -13,14 +13,31 @@ from config import get_settings
 from db_schema import SCHEMA, get_dialect_schema
 
 async def get_pg_conn():
-    return await asyncpg.connect(
-        database=os.environ.get("DB_NAME", "bananabot"),
-        user=os.environ.get("DB_USER", "bananabot"),
-        password=os.environ.get("DB_PASS", ""),
-        host=os.environ.get("DB_HOST", "127.0.0.1"),
-        port=os.environ.get("DB_PORT", "5432"),
-        timeout=10.0
-    )
+    settings = get_settings()
+    db_name = os.environ.get("DB_NAME") or settings.db_name
+    db_user = os.environ.get("DB_USER") or settings.db_user
+    db_pass = os.environ.get("DB_PASS") or settings.db_pass
+    db_host = os.environ.get("DB_HOST") or settings.db_host
+    db_port = os.environ.get("DB_PORT") or settings.db_port
+
+    print(f"Connecting to PostgreSQL ({db_user}@{db_host}:{db_port}/{db_name})...")
+    try:
+        return await asyncpg.connect(
+            database=db_name,
+            user=db_user,
+            password=db_pass,
+            host=db_host,
+            port=db_port,
+            timeout=10.0
+        )
+    except asyncpg.exceptions.InvalidPasswordError:
+        print("\n" + "="*60)
+        print("ERROR: PostgreSQL password authentication failed!")
+        print(f"User: {db_user}")
+        print(f"Host: {db_host}:{db_port}")
+        print(f"Database: {db_name}")
+        print("="*60 + "\n")
+        raise
 
 def get_sqlite_conn(path):
     conn = sqlite3.connect(path)
@@ -76,7 +93,10 @@ async def migrate_sqlite_to_postgres():
         await pg_conn.executemany(query, values)
         
         if "id" in columns:
-            await pg_conn.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {table}")
+            try:
+                await pg_conn.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {table}")
+            except Exception as seq_err:
+                print(f" -> [Note] Sequence setval skipped for {table}: {seq_err}")
             
     print("Migration complete!")
     await pg_conn.close()

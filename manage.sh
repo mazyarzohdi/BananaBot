@@ -1133,12 +1133,22 @@ action_migrate_db() {
         fi
     fi
     
-    # If migrating to Postgres and no Postgres config exists, generate it
+    # If migrating to Postgres, configure, grant permissions, and test auth
     local current_db_type
     current_db_type=$(get_env_value "DB_TYPE")
-    if [[ "$new_type" == "postgres" && "$current_db_type" != "postgres" ]]; then
-        log "Setting up PostgreSQL..."
+    current_db_type="${current_db_type:-sqlite}"
+    
+    if [[ "$new_type" == "postgres" ]]; then
+        log "Setting up and verifying PostgreSQL..."
+        for pg_bin in /usr/pgsql-*/bin; do
+            if [[ -d "$pg_bin" ]]; then
+                export PATH="$pg_bin:$PATH"
+                break
+            fi
+        done
+        
         if ! command -v psql &>/dev/null; then
+            log "Installing PostgreSQL server and client..."
             if command -v apt-get &>/dev/null; then
                 apt-get update -qq && apt-get install -y -qq postgresql postgresql-contrib
             else
@@ -1149,20 +1159,80 @@ action_migrate_db() {
         if command -v systemctl &>/dev/null; then
             if ! systemctl is-active --quiet postgresql; then
                 if command -v postgresql-setup &>/dev/null; then
-                    postgresql-setup initdb >/dev/null 2>&1 || true
+                    postgresql-setup initdb >> "$LOG_FILE" 2>&1 || true
                 fi
-                systemctl enable postgresql >/dev/null 2>&1
-                systemctl start postgresql >/dev/null 2>&1
+                systemctl enable postgresql >> "$LOG_FILE" 2>&1 || true
+                systemctl start postgresql >> "$LOG_FILE" 2>&1 || true
+                sleep 2
             fi
         fi
         
+        run_pg_cmd() {
+            local sql="$1"
+            local db="${2:-postgres}"
+            if command -v runuser &>/dev/null; then
+                runuser -u postgres -- psql -d "$db" -c "$sql"
+            elif command -v sudo &>/dev/null; then
+                sudo -u postgres psql -d "$db" -c "$sql"
+            elif command -v su &>/dev/null; then
+                su - postgres -c "psql -d '$db' -c \"$sql\""
+            else
+                psql -U postgres -d "$db" -c "$sql"
+            fi
+        }
+        
         local db_pass
-        db_pass=$(openssl rand -hex 16)
-        sudo -u postgres psql -c "CREATE DATABASE bananabot;" >/dev/null 2>&1 || true
-        sudo -u postgres psql -c "CREATE USER bananabot WITH ENCRYPTED PASSWORD '$db_pass';" >/dev/null 2>&1 || true
-        sudo -u postgres psql -c "ALTER USER bananabot WITH ENCRYPTED PASSWORD '$db_pass';" >/dev/null 2>&1 || true
-        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >/dev/null 2>&1 || true
-        sudo -u postgres psql -d bananabot -c "GRANT ALL ON SCHEMA public TO bananabot;" >/dev/null 2>&1 || true
+        db_pass=$(get_env_value "DB_PASS" | tr -d '"'\'' ')
+        if [[ -z "$db_pass" ]]; then
+            db_pass=$(openssl rand -hex 16)
+        fi
+        
+        log "Configuring PostgreSQL user and database..."
+        run_pg_cmd "DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'bananabot') THEN
+        CREATE ROLE bananabot WITH LOGIN PASSWORD '$db_pass';
+    ELSE
+        ALTER ROLE bananabot WITH LOGIN PASSWORD '$db_pass';
+    END IF;
+END
+\$\$;" >> "$LOG_FILE" 2>&1 || {
+            run_pg_cmd "CREATE USER bananabot WITH PASSWORD '$db_pass';" >> "$LOG_FILE" 2>&1 || true
+            run_pg_cmd "ALTER USER bananabot WITH PASSWORD '$db_pass';" >> "$LOG_FILE" 2>&1 || true
+        }
+        
+        if ! run_pg_cmd "SELECT 1 FROM pg_database WHERE datname = 'bananabot';" 2>/dev/null | grep -q 1; then
+            run_pg_cmd "CREATE DATABASE bananabot OWNER bananabot;" >> "$LOG_FILE" 2>&1 || true
+        fi
+        
+        run_pg_cmd "ALTER DATABASE bananabot OWNER TO bananabot;" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "ALTER SCHEMA public OWNER TO bananabot;" "bananabot" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "GRANT ALL ON SCHEMA public TO bananabot;" "bananabot" >> "$LOG_FILE" 2>&1 || true
+        
+        # Ensure pg_hba.conf allows local password auth
+        local hba_file
+        hba_file=$(run_pg_cmd "SHOW hba_file;" 2>/dev/null | grep -E "^/.*pg_hba.conf" | tr -d ' ' || echo "")
+        if [[ -n "$hba_file" && -f "$hba_file" ]]; then
+            if ! grep -qE "host\s+all\s+bananabot\s+127\.0\.0\.1/32\s+(md5|scram-sha-256|trust)" "$hba_file"; then
+                log "Configuring $hba_file for password authentication..."
+                sed -i '1ihost    all             bananabot       127.0.0.1/32            md5' "$hba_file"
+                sed -i '1ihost    all             bananabot       ::1/128                 md5' "$hba_file"
+                systemctl reload postgresql >> "$LOG_FILE" 2>&1 || systemctl restart postgresql >> "$LOG_FILE" 2>&1 || true
+            fi
+        fi
+        
+        # Pre-flight authentication test
+        log "Verifying PostgreSQL authentication..."
+        export PGPASSWORD="$db_pass"
+        local pg_check
+        if ! pg_check=$(psql -h 127.0.0.1 -U bananabot -d bananabot -c "SELECT 1;" 2>&1); then
+            error "PostgreSQL authentication check failed!"
+            echo -e "${RED}$pg_check${NC}"
+            echo -e "Details logged in $LOG_FILE"
+            return 1
+        fi
+        success "PostgreSQL authentication verified successfully!"
         
         set_env_value "DB_TYPE" "postgres"
         set_env_value "DB_NAME" "bananabot"
@@ -1170,8 +1240,16 @@ action_migrate_db() {
         set_env_value "DB_PASS" "$db_pass"
         set_env_value "DB_HOST" "127.0.0.1"
         set_env_value "DB_PORT" "5432"
+        
+        export DB_TYPE="postgres"
+        export DB_NAME="bananabot"
+        export DB_USER="bananabot"
+        export DB_PASS="$db_pass"
+        export DB_HOST="127.0.0.1"
+        export DB_PORT="5432"
     elif [[ "$new_type" == "sqlite" ]]; then
         set_env_value "DB_TYPE" "sqlite"
+        export DB_TYPE="sqlite"
     fi
     
     log "Stopping bot services to prevent data corruption during migration..."
@@ -1184,8 +1262,8 @@ action_migrate_db() {
         action_restart
         action_webapp_restart
     else
-        error "Migration failed! Restoring original DB_TYPE to $current_db_type..."
-        set_env_value "DB_TYPE" "$current_db_type"
+        error "Migration failed! Restoring original DB_TYPE to ${current_db_type:-sqlite}..."
+        set_env_value "DB_TYPE" "${current_db_type:-sqlite}"
         action_restart
         action_webapp_restart
     fi

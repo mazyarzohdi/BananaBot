@@ -168,6 +168,13 @@ install_python_deps() {
 init_postgres() {
     if [[ "$DB_TYPE" == "postgres" ]]; then
         log "Configuring PostgreSQL..."
+        for pg_bin in /usr/pgsql-*/bin; do
+            if [[ -d "$pg_bin" ]]; then
+                export PATH="$pg_bin:$PATH"
+                break
+            fi
+        done
+
         if command -v systemctl &>/dev/null; then
             if ! systemctl is-active --quiet postgresql; then
                 if command -v postgresql-setup &>/dev/null; then
@@ -175,14 +182,64 @@ init_postgres() {
                 fi
                 systemctl enable postgresql >> "$LOG_FILE" 2>&1
                 systemctl start postgresql >> "$LOG_FILE" 2>&1
+                sleep 2
             fi
         fi
-        sudo -u postgres psql -c "CREATE DATABASE bananabot;" >> "$LOG_FILE" 2>&1 || true
-        sudo -u postgres psql -c "CREATE USER bananabot WITH ENCRYPTED PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
-        sudo -u postgres psql -c "ALTER USER bananabot WITH ENCRYPTED PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
-        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >> "$LOG_FILE" 2>&1 || true
-        sudo -u postgres psql -d bananabot -c "GRANT ALL ON SCHEMA public TO bananabot;" >> "$LOG_FILE" 2>&1 || true
-        success "PostgreSQL configured."
+
+        run_pg_cmd() {
+            local sql="$1"
+            local db="${2:-postgres}"
+            if command -v runuser &>/dev/null; then
+                runuser -u postgres -- psql -d "$db" -c "$sql"
+            elif command -v sudo &>/dev/null; then
+                sudo -u postgres psql -d "$db" -c "$sql"
+            elif command -v su &>/dev/null; then
+                su - postgres -c "psql -d '$db' -c \"$sql\""
+            else
+                psql -U postgres -d "$db" -c "$sql"
+            fi
+        }
+
+        run_pg_cmd "DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'bananabot') THEN
+        CREATE ROLE bananabot WITH LOGIN PASSWORD '$DB_PASS';
+    ELSE
+        ALTER ROLE bananabot WITH LOGIN PASSWORD '$DB_PASS';
+    END IF;
+END
+\$\$;" >> "$LOG_FILE" 2>&1 || {
+            run_pg_cmd "CREATE USER bananabot WITH PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
+            run_pg_cmd "ALTER USER bananabot WITH PASSWORD '$DB_PASS';" >> "$LOG_FILE" 2>&1 || true
+        }
+
+        if ! run_pg_cmd "SELECT 1 FROM pg_database WHERE datname = 'bananabot';" 2>/dev/null | grep -q 1; then
+            run_pg_cmd "CREATE DATABASE bananabot OWNER bananabot;" >> "$LOG_FILE" 2>&1 || true
+        fi
+
+        run_pg_cmd "ALTER DATABASE bananabot OWNER TO bananabot;" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "GRANT ALL PRIVILEGES ON DATABASE bananabot TO bananabot;" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "ALTER SCHEMA public OWNER TO bananabot;" "bananabot" >> "$LOG_FILE" 2>&1 || true
+        run_pg_cmd "GRANT ALL ON SCHEMA public TO bananabot;" "bananabot" >> "$LOG_FILE" 2>&1 || true
+
+        # Ensure pg_hba.conf allows local password auth
+        local hba_file
+        hba_file=$(run_pg_cmd "SHOW hba_file;" 2>/dev/null | grep -E "^/.*pg_hba.conf" | tr -d ' ' || echo "")
+        if [[ -n "$hba_file" && -f "$hba_file" ]]; then
+            if ! grep -qE "host\s+all\s+bananabot\s+127\.0\.0\.1/32\s+(md5|scram-sha-256|trust)" "$hba_file"; then
+                sed -i '1ihost    all             bananabot       127.0.0.1/32            md5' "$hba_file"
+                sed -i '1ihost    all             bananabot       ::1/128                 md5' "$hba_file"
+                systemctl reload postgresql >> "$LOG_FILE" 2>&1 || systemctl restart postgresql >> "$LOG_FILE" 2>&1 || true
+            fi
+        fi
+
+        # Pre-flight check
+        export PGPASSWORD="$DB_PASS"
+        if psql -h 127.0.0.1 -U bananabot -d bananabot -c "SELECT 1;" >> "$LOG_FILE" 2>&1; then
+            success "PostgreSQL configured and verified."
+        else
+            warn "PostgreSQL configured but initial connection test had an issue. Check: $LOG_FILE"
+        fi
     fi
 }
 

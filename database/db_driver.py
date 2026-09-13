@@ -94,15 +94,18 @@ class DBConnectionWrapper:
         await self.conn.close()
 
 async def get_db_connection(path: str) -> DBConnectionWrapper:
-    db_type = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+    from config import get_settings
+    settings = get_settings()
+    
+    db_type = settings.db_type.strip().lower()
     if db_type == "postgres":
         import asyncpg
         conn = await asyncpg.connect(
-            database=os.environ.get("DB_NAME", "bananabot"),
-            user=os.environ.get("DB_USER", "bananabot"),
-            password=os.environ.get("DB_PASS", ""),
-            host=os.environ.get("DB_HOST", "127.0.0.1"),
-            port=os.environ.get("DB_PORT", "5432"),
+            database=settings.db_name,
+            user=settings.db_user,
+            password=settings.db_pass,
+            host=settings.db_host,
+            port=settings.db_port,
             timeout=30.0
         )
         return DBConnectionWrapper(conn, db_type)

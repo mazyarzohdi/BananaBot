@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     card_holder: str = ""
     required_channel: str = ""
     panel_url: str = ""
+    db_type: str = "sqlite"
+    db_name: str = "bananabot"
+    db_user: str = "bananabot"
+    db_pass: str = ""
+    db_host: str = "127.0.0.1"
+    db_port: str = "5432"
 
     @field_validator("admin_ids", mode="before")
     @classmethod
