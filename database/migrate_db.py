@@ -145,7 +145,7 @@ async def migrate_postgres_to_sqlite():
             continue
             
         sl_conn.execute(f"DELETE FROM {table}")
-        columns = rows[0].keys()
+        columns = tuple(rows[0].keys())
         col_names = ", ".join(columns)
         placeholders = ", ".join("?" for _ in columns)
         query = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
