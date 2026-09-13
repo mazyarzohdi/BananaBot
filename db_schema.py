@@ -311,11 +311,13 @@ def get_dialect_schema(db_type: str = "sqlite") -> str:
     """Returns the schema translated to the target database dialect."""
     schema = SCHEMA
     if db_type == "postgres":
-        schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        schema = schema.replace("telegram_id INTEGER", "telegram_id BIGINT")
-        schema = schema.replace("expiry_time INTEGER", "expiry_time BIGINT")
-        schema = schema.replace("expires_at INTEGER", "expires_at BIGINT")
-        schema = schema.replace("handled_by INTEGER", "handled_by BIGINT")
+        schema = schema.replace("AUTOINCREMENT", "")
+        schema = schema.replace("INTEGER PRIMARY KEY", "BIGSERIAL PRIMARY KEY")
+        
+        # SQLite INTEGER is up to 64-bit. Postgres INTEGER is 32-bit. 
+        # Safest is to map all remaining INTEGER to BIGINT to prevent OverflowError on large amounts/IDs
+        schema = schema.replace(" INTEGER", " BIGINT")
+        
         schema = schema.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
         schema = schema.replace("REAL", "DOUBLE PRECISION")
     return schema
