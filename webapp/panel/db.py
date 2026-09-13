@@ -55,9 +55,9 @@ def get_conn():
                 return self._cursor.rowcount
             def fetchone(self):
                 row = self._cursor.fetchone()
-                return dict(row) if row else None
+                return row if row is not None else None
             def fetchall(self):
-                return [dict(r) for r in self._cursor.fetchall()]
+                return self._cursor.fetchall()
             @property
             def lastrowid(self):
                 try:
