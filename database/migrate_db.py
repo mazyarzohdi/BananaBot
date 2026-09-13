@@ -150,7 +150,14 @@ async def migrate_postgres_to_sqlite():
         placeholders = ", ".join("?" for _ in columns)
         query = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
         
-        values = [tuple(dict(r).values()) for r in rows]
+        def _serialize_val(val):
+            if hasattr(val, "strftime"):
+                return val.strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(val, bool):
+                return 1 if val else 0
+            return val
+
+        values = [tuple(_serialize_val(v) for v in dict(r).values()) for r in rows]
         sl_conn.executemany(query, values)
         print(f"    (migrated {len(values)} rows)")
         

@@ -779,9 +779,14 @@ _sqlite_backup_file() {
 
 action_backup_db() {
     echo ""
+    local target_type="${1:-}"
     local cur_db_type
-    cur_db_type=$(get_env_value "DB_TYPE")
-    cur_db_type="${cur_db_type:-sqlite}"
+    if [[ -n "$target_type" ]]; then
+        cur_db_type="$target_type"
+    else
+        cur_db_type=$(get_env_value "DB_TYPE")
+        cur_db_type="${cur_db_type:-sqlite}"
+    fi
     mkdir -p "$BACKUP_DIR"
 
     local ts
@@ -808,9 +813,9 @@ action_backup_db() {
         fi
 
         local count
-        count=$(ls -1 "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | wc -l)
+        count=$(ls -1 "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 15 ]]; then
-            ls -1t "$BACKUP_DIR"/bot_pg_*.sql | tail -n +16 | xargs -r rm -f
+            ls -1t "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | tail -n +16 | xargs -r rm -f || true
             log "Older PostgreSQL backups trimmed (keeping the 15 most recent)."
         fi
     else
@@ -829,9 +834,9 @@ action_backup_db() {
         fi
 
         local count
-        count=$(ls -1 "$BACKUP_DIR"/bot_*.db 2>/dev/null | wc -l)
+        count=$(ls -1 "$BACKUP_DIR"/bot_*.db 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 15 ]]; then
-            ls -1t "$BACKUP_DIR"/bot_*.db | tail -n +16 | xargs -r rm -f
+            ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null | tail -n +16 | xargs -r rm -f || true
             log "Older backups trimmed (keeping the 15 most recent)."
         fi
     fi
@@ -1186,17 +1191,17 @@ action_migrate_db() {
     fi
     
     # Send a backup to the admin on Telegram before migration
-    action_backup_db
-    local latest_backup
-    local backup_caption
+    action_backup_db "$old_type"
+    local latest_backup=""
+    local backup_caption=""
     if [[ "$old_type" == "sqlite" ]]; then
-        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null | head -n 1)
+        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_*.db 2>/dev/null | head -n 1 || true)
         backup_caption="Backup before migration to Postgres (SQLite)"
     else
-        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | head -n 1)
+        latest_backup=$(ls -1t "$BACKUP_DIR"/bot_pg_*.sql 2>/dev/null | head -n 1 || true)
         backup_caption="Backup before migration to SQLite (PostgreSQL)"
     fi
-    if [[ -n "$latest_backup" ]]; then
+    if [[ -n "$latest_backup" && -f "$latest_backup" ]]; then
         log "Sending backup to Telegram admin..."
         local token
         token=$(get_env_value "BOT_TOKEN")
@@ -1204,7 +1209,7 @@ action_migrate_db() {
         admin_ids=$(get_env_value "ADMIN_IDS" | tr -d '[]' | cut -d',' -f1)
         
         if [[ -n "$token" && -n "$admin_ids" ]]; then
-            curl -s -F chat_id="$admin_ids" -F document=@"$latest_backup" -F caption="$backup_caption" "https://api.telegram.org/bot${token}/sendDocument" > /dev/null
+            curl -s -F chat_id="$admin_ids" -F document=@"$latest_backup" -F caption="$backup_caption" "https://api.telegram.org/bot${token}/sendDocument" > /dev/null || true
             success "Backup sent to Telegram."
         else
             warn "Could not send backup: Token or Admin ID missing."
@@ -1215,6 +1220,13 @@ action_migrate_db() {
     local current_db_type
     current_db_type=$(get_env_value "DB_TYPE")
     current_db_type="${current_db_type:-sqlite}"
+
+    local db_pass db_user db_name db_host db_port
+    db_pass=$(get_env_value "DB_PASS" | tr -d '"'\'' ')
+    db_user=$(get_env_value "DB_USER"); db_user="${db_user:-bananabot}"
+    db_name=$(get_env_value "DB_NAME"); db_name="${db_name:-bananabot}"
+    db_host=$(get_env_value "DB_HOST"); db_host="${db_host:-127.0.0.1}"
+    db_port=$(get_env_value "DB_PORT"); db_port="${db_port:-5432}"
     
     if [[ "$new_type" == "postgres" ]]; then
         log "Setting up and verifying PostgreSQL..."
@@ -1328,6 +1340,11 @@ END
     elif [[ "$new_type" == "sqlite" ]]; then
         set_env_value "DB_TYPE" "sqlite"
         export DB_TYPE="sqlite"
+        export DB_NAME="$db_name"
+        export DB_USER="$db_user"
+        export DB_PASS="$db_pass"
+        export DB_HOST="$db_host"
+        export DB_PORT="$db_port"
     fi
     
     log "Stopping bot services to prevent data corruption during migration..."
