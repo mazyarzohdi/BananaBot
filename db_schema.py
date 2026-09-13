@@ -520,11 +520,11 @@ def reconcile(db_path: str = "data/bot.db") -> dict:
     missing columns, apply legacy MIGRATIONS, and seed any DEFAULT_SETTINGS
     that aren't already present. Returns a report of what changed so
     callers (e.g. manage.sh) can show the admin what happened."""
-    db_type = os.environ.get("DB_TYPE", "").strip().lower()
+    db_type = (os.environ.get("DB_TYPE", "")).strip().strip('\'"').lower()
     if not db_type:
         try:
             from config import get_settings
-            db_type = getattr(get_settings(), "db_type", "sqlite").strip().lower()
+            db_type = getattr(get_settings(), "db_type", "sqlite").strip().strip('\'"').lower()
         except Exception:
             db_type = "sqlite"
 
@@ -678,17 +678,17 @@ def reconcile(db_path: str = "data/bot.db") -> dict:
 
 
 if __name__ == "__main__":
-    db_type = os.environ.get("DB_TYPE", "").strip().lower()
+    db_type = (os.environ.get("DB_TYPE", "")).strip().strip('\'"').lower()
     if not db_type:
         try:
             from config import get_settings
-            db_type = getattr(get_settings(), "db_type", "sqlite").strip().lower()
+            db_type = getattr(get_settings(), "db_type", "sqlite").strip().strip('\'"').lower()
         except Exception:
             db_type = "sqlite"
 
     if db_type == "postgres":
         print("Reconciling schema for: PostgreSQL database")
-        result = reconcile()
+        result = reconcile_postgres()
     else:
         target = sys.argv[1] if len(sys.argv) > 1 else "data/bot.db"
         print(f"Reconciling schema for: {target}")

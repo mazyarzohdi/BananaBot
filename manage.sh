@@ -69,12 +69,13 @@ check_installed() {
 
 get_env_value() {
     local key="$1"
-    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- || echo ""
+    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//' || echo ""
 }
 
 set_env_value() {
     local key="$1"
     local value="$2"
+    value=$(echo "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//')
     if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
         sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
     else
@@ -110,6 +111,17 @@ webhook_status_line() {
     fi
 }
 
+db_status_line() {
+    local cur_db
+    cur_db=$(get_env_value "DB_TYPE")
+    cur_db="${cur_db:-sqlite}"
+    if [[ "$cur_db" == "postgres" ]]; then
+        echo -e "  Database Engine:   ${CYAN}🐘 PostgreSQL${NC}"
+    else
+        echo -e "  Database Engine:   ${CYAN}🗃️  SQLite${NC}"
+    fi
+}
+
 print_header() {
     clear
     echo -e "${BOLD}${BLUE}"
@@ -120,6 +132,7 @@ print_header() {
     bot_status
     webapp_status_line
     webhook_status_line
+    db_status_line
     echo ""
 }
 
@@ -367,6 +380,10 @@ action_show_config() {
     echo -e "  CARD_NUMBER:       ${CYAN}$(get_env_value 'CARD_NUMBER')${NC}"
     echo -e "  CARD_HOLDER:       ${CYAN}$(get_env_value 'CARD_HOLDER')${NC}"
     echo -e "  REQUIRED_CHANNEL:  ${CYAN}$(get_env_value 'REQUIRED_CHANNEL')${NC}"
+    local cur_db
+    cur_db=$(get_env_value 'DB_TYPE')
+    cur_db="${cur_db:-sqlite}"
+    echo -e "  DB_TYPE:           ${CYAN}${cur_db}${NC}"
     echo -e "  PANEL_URL:         ${CYAN}$(get_env_value 'PANEL_URL')${NC}"
     echo ""
     if [[ -f "$DB_PATH" ]] && command -v sqlite3 >/dev/null 2>&1; then
@@ -573,8 +590,18 @@ finally:
         rm -f "/tmp/.env.webapp.bak"
     fi
 
+    # Sync DB_TYPE and credentials into WEBAPP_ENV to keep both in sync
+    if [[ -f "$WEBAPP_ENV" ]]; then
+        load_webapp_lib
+        webapp_set_env_value "DB_TYPE" "$cur_db_type"
+        for key in DB_NAME DB_USER DB_PASS DB_HOST DB_PORT; do
+            val=$(get_env_value "$key")
+            [[ -n "$val" ]] && webapp_set_env_value "$key" "$val"
+        done
+    fi
+
     if [[ "$cur_db_type" != "postgres" ]]; then
-        # بازگرداندن دیتابیس فعال از روی نسخه بک‌آپ گرفته‌شده (برای SQLite)
+        # بازگرداندن دیتابیس فعال از روی نسخه بک‌آپ گرفته‌شده (فقط برای SQLite)
         if [[ "$had_existing_db" -eq 1 && -n "$safety_dest" && -f "$safety_dest" ]]; then
             log "Restoring active database from pre-update backup..."
             rm -f "${DB_PATH}-wal" "${DB_PATH}-shm"
@@ -1324,41 +1351,41 @@ END
         fi
         success "PostgreSQL authentication verified successfully!"
         
-        set_env_value "DB_TYPE" "postgres"
-        set_env_value "DB_NAME" "bananabot"
-        set_env_value "DB_USER" "bananabot"
-        set_env_value "DB_PASS" "$db_pass"
-        set_env_value "DB_HOST" "127.0.0.1"
-        set_env_value "DB_PORT" "5432"
-        
-        export DB_TYPE="postgres"
-        export DB_NAME="bananabot"
-        export DB_USER="bananabot"
-        export DB_PASS="$db_pass"
-        export DB_HOST="127.0.0.1"
-        export DB_PORT="5432"
-    elif [[ "$new_type" == "sqlite" ]]; then
-        set_env_value "DB_TYPE" "sqlite"
-        export DB_TYPE="sqlite"
-        export DB_NAME="$db_name"
-        export DB_USER="$db_user"
-        export DB_PASS="$db_pass"
-        export DB_HOST="$db_host"
-        export DB_PORT="$db_port"
-    fi
-    
     log "Stopping bot services to prevent data corruption during migration..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl stop "$WEBAPP_SERVICE" 2>/dev/null || true
     
     log "Running migration script ($direction)..."
     if "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/database/migrate_db.py" --direction "$direction"; then
+        if [[ "$new_type" == "postgres" ]]; then
+            set_env_value "DB_TYPE" "postgres"
+            set_env_value "DB_NAME" "bananabot"
+            set_env_value "DB_USER" "bananabot"
+            set_env_value "DB_PASS" "$db_pass"
+            set_env_value "DB_HOST" "127.0.0.1"
+            set_env_value "DB_PORT" "5432"
+
+            if [[ -f "$WEBAPP_ENV" ]]; then
+                load_webapp_lib
+                webapp_set_env_value "DB_TYPE" "postgres"
+                webapp_set_env_value "DB_NAME" "bananabot"
+                webapp_set_env_value "DB_USER" "bananabot"
+                webapp_set_env_value "DB_PASS" "$db_pass"
+                webapp_set_env_value "DB_HOST" "127.0.0.1"
+                webapp_set_env_value "DB_PORT" "5432"
+            fi
+        else
+            set_env_value "DB_TYPE" "sqlite"
+            if [[ -f "$WEBAPP_ENV" ]]; then
+                load_webapp_lib
+                webapp_set_env_value "DB_TYPE" "sqlite"
+            fi
+        fi
         success "Migration completed successfully!"
         action_restart
         action_webapp_restart
     else
-        error "Migration failed! Restoring original DB_TYPE to ${current_db_type:-sqlite}..."
-        set_env_value "DB_TYPE" "${current_db_type:-sqlite}"
+        error "Migration failed! Database type remains unchanged (${current_db_type:-sqlite})."
         action_restart
         action_webapp_restart
     fi

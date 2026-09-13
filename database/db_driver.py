@@ -13,6 +13,9 @@ def _convert_query(query: str, db_type: str) -> str:
             res += f"${i}" + part
     res = res.replace("MAX(", "GREATEST(")
     res = res.replace("datetime('now')", "CURRENT_TIMESTAMP")
+    res = res.replace("date('now')", "CURRENT_DATE")
+    # Translate SQLite date(column) to Postgres (column)::DATE
+    res = re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', res)
     res = res.replace("BEGIN EXCLUSIVE", "BEGIN")
     if "INSERT OR REPLACE INTO settings (key, value) VALUES" in res:
         res = res.replace(
@@ -102,7 +105,7 @@ async def get_db_connection(path: str) -> DBConnectionWrapper:
     from config import get_settings
     settings = get_settings()
     
-    raw_type = (os.environ.get("DB_TYPE") or getattr(settings, "db_type", None) or "sqlite").strip().lower()
+    raw_type = (os.environ.get("DB_TYPE") or getattr(settings, "db_type", None) or "sqlite").strip().strip('\'"').lower()
     
     if raw_type == "postgres":
         import asyncpg

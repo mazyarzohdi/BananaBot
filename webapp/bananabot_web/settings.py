@@ -94,7 +94,7 @@ BOT_DB_PATH = os.environ.get(
     str(BOT_DIR / "data" / "bot.db"),
 )
 
-DB_TYPE = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+DB_TYPE = os.environ.get("DB_TYPE", "sqlite").strip().strip('\'"').lower()
 
 if DB_TYPE == "postgres":
     DATABASES = {

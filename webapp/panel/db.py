@@ -17,7 +17,7 @@ from psycopg2.extras import DictCursor
 
 @contextmanager
 def get_conn():
-    db_type = os.environ.get("DB_TYPE", "sqlite").strip().lower()
+    db_type = os.environ.get("DB_TYPE", "sqlite").strip().strip('\'"').lower()
     
     if db_type == "postgres":
         conn = psycopg2.connect(
@@ -39,11 +39,18 @@ def get_conn():
                     query = "%s".join(parts)
                 query = query.replace("MAX(", "GREATEST(")
                 query = query.replace("datetime('now')", "CURRENT_TIMESTAMP")
+                query = query.replace("date('now')", "CURRENT_DATE")
+                # Translate SQLite date(column) to Postgres (column)::DATE
+                import re as _re
+                query = _re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', query)
                 query = query.replace("BEGIN EXCLUSIVE", "BEGIN")
-                if "ON CONFLICT(key) DO UPDATE" in query: # Handle sqlite upsert difference
+                if "ON CONFLICT(key) DO UPDATE" in query:
                     query = query.replace("ON CONFLICT(key) DO UPDATE SET", "ON CONFLICT(key) DO UPDATE SET")
                 self._cursor.execute(query, params)
                 return self
+            @property
+            def rowcount(self):
+                return self._cursor.rowcount
             def fetchone(self):
                 row = self._cursor.fetchone()
                 return dict(row) if row else None

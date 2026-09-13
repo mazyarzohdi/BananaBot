@@ -21,6 +21,14 @@ webapp_write_env() {
             || python3 -c "import secrets; print(secrets.token_urlsafe(50))")
     fi
 
+    local db_type db_name db_user db_pass db_host db_port
+    db_type=$(get_env_value "DB_TYPE"); db_type="${db_type:-sqlite}"
+    db_name=$(get_env_value "DB_NAME"); db_name="${db_name:-bananabot}"
+    db_user=$(get_env_value "DB_USER"); db_user="${db_user:-bananabot}"
+    db_pass=$(get_env_value "DB_PASS")
+    db_host=$(get_env_value "DB_HOST"); db_host="${db_host:-127.0.0.1}"
+    db_port=$(get_env_value "DB_PORT"); db_port="${db_port:-5432}"
+
     cat > "$WEBAPP_DIR/.env" << EOF
 DJANGO_SECRET_KEY=${django_secret}
 DJANGO_DEBUG=0
@@ -28,12 +36,12 @@ DJANGO_ALLOWED_HOSTS=${WEB_DOMAIN},localhost,127.0.0.1
 WEB_DOMAIN=${WEB_DOMAIN}
 BOT_TOKEN=${BOT_TOKEN}
 ADMIN_IDS=${ADMIN_IDS}
-DB_TYPE=${DB_TYPE}
-DB_NAME=${DB_NAME}
-DB_USER=${DB_USER}
-DB_PASS=${DB_PASS}
-DB_HOST=${DB_HOST}
-DB_PORT=${DB_PORT}
+DB_TYPE=${db_type}
+DB_NAME=${db_name}
+DB_USER=${db_user}
+DB_PASS=${db_pass}
+DB_HOST=${db_host}
+DB_PORT=${db_port}
 BOT_DB_PATH=${INSTALL_DIR}/data/bot.db
 WEB_PATH=${WEB_PATH}
 WEB_PORT=${WEB_PORT}
@@ -230,5 +238,18 @@ webapp_sync_after_code_update() {
 
 webapp_get_env_value() {
     local key="$1"
-    grep -E "^${key}=" "$WEBAPP_DIR/.env" 2>/dev/null | cut -d'=' -f2- || echo ""
+    grep -E "^${key}=" "$WEBAPP_DIR/.env" 2>/dev/null | cut -d'=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//' || echo ""
 }
+
+webapp_set_env_value() {
+    local key="$1"
+    local value="$2"
+    [[ ! -f "$WEBAPP_DIR/.env" ]] && return 0
+    value=$(echo "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//')
+    if grep -qE "^${key}=" "$WEBAPP_DIR/.env" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$WEBAPP_DIR/.env"
+    else
+        echo "${key}=${value}" >> "$WEBAPP_DIR/.env"
+    fi
+}
+
