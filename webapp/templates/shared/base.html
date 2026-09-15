@@ -45,7 +45,7 @@
 
     <nav class="nav">
       <a href="{% url 'panel:dashboard' %}" class="nav-item {% block nav_dashboard %}{% endblock %}">
-        <i class="fa fa-gauge"></i> داشبورد
+        <i class="fa fa-gamepad"></i> داشبورد و بازی
       </a>
 
       {% if not is_admin %}
@@ -112,7 +112,13 @@
         </button>
         <h1 class="page-title">{% block page_title %}داشبورد{% endblock %}</h1>
       </div>
-      <div class="topbar-right">
+      <div class="topbar-right" style="display: flex; align-items: center; gap: 8px;">
+        {% if not is_admin %}
+        <div class="balance-badge" id="topbarGameBalanceBadge" style="background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.35);" title="امتیاز بازی کلیکی">
+          <i class="fa fa-coins" style="color: #fbbf24;"></i>
+          <span><strong id="topbarGameBalance">0</strong></span>
+        </div>
+        {% endif %}
         {% if db_user %}
           <a href="{% url 'panel:user_wallet' %}" class="balance-badge" style="text-decoration: none;">
             <i class="fa fa-wallet"></i>
@@ -143,8 +149,8 @@
 <nav class="bottom-nav" id="bottomNav">
   {% if not is_admin %}
     <a href="{% url 'panel:dashboard' %}" class="bottom-nav-item">
-      <i class="fa fa-gauge"></i>
-      <span>داشبورد</span>
+      <i class="fa fa-gamepad"></i>
+      <span>بازی و خانه</span>
     </a>
     <a href="{% url 'panel:user_services' %}" class="bottom-nav-item">
       <i class="fa fa-server"></i>

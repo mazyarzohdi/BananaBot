@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import game_views
 
 app_name = "panel"
 
@@ -12,6 +13,13 @@ urlpatterns = [
     # Dashboard
     path("",         views.dashboard, name="dashboard"),
     path("dashboard/", views.dashboard, name="dashboard_alt"),
+
+    # Game API
+    path("api/game/state/",       game_views.api_game_state,       name="api_game_state"),
+    path("api/game/sync/",        game_views.api_game_sync,        name="api_game_sync"),
+    path("api/game/upgrade/",     game_views.api_game_upgrade,     name="api_game_upgrade"),
+    path("api/game/leaderboard/", game_views.api_game_leaderboard, name="api_game_leaderboard"),
+    path("api/game/nickname/",    game_views.api_game_nickname,    name="api_game_nickname"),
 
     # User
     path("services/", views.user_services, name="user_services"),

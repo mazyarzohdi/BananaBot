@@ -1,56 +1,547 @@
 {% extends "shared/base.html" %}
-{% block title %}داشبورد{% endblock %}
-{% block page_title %}داشبورد{% endblock %}
+{% load static %}
+
+{% block title %}بازی کلیکی و مسابقه هفتگی | BananaBot{% endblock %}
+{% block page_title %}بازی و مسابقه کلیکی{% endblock %}
 {% block nav_dashboard %}active{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'css/game.css' %}"/>
+<style>
+  /* Extra Dashboard Integration Styles */
+  .game-tab-nav {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+  .game-tab-nav::-webkit-scrollbar { display: none; }
+
+  .game-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+  }
+  .game-nav-btn:hover {
+    background: rgba(99, 102, 241, 0.12);
+    border-color: rgba(99, 102, 241, 0.3);
+    color: #fff;
+  }
+  .game-nav-btn.active {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25));
+    border-color: rgba(168, 85, 247, 0.6);
+    color: #fff;
+    box-shadow: 0 0 16px rgba(168, 85, 247, 0.2);
+  }
+
+  .game-tab-view {
+    display: none;
+    animation: tabFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .game-tab-view.active {
+    display: block;
+  }
+
+  /* Prize Showcase Cards */
+  .prizes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .prize-card {
+    background: rgba(15, 23, 42, 0.7);
+    border-radius: var(--radius-sm);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    position: relative;
+    overflow: hidden;
+  }
+  .prize-card.gold {
+    border-color: rgba(245, 158, 11, 0.45);
+    background: radial-gradient(circle at top, rgba(245, 158, 11, 0.12), rgba(15, 23, 42, 0.8));
+  }
+  .prize-card.silver {
+    border-color: rgba(203, 213, 225, 0.4);
+    background: radial-gradient(circle at top, rgba(203, 213, 225, 0.1), rgba(15, 23, 42, 0.8));
+  }
+  .prize-card.bronze {
+    border-color: rgba(251, 146, 60, 0.4);
+    background: radial-gradient(circle at top, rgba(251, 146, 60, 0.1), rgba(15, 23, 42, 0.8));
+  }
+  .prize-icon {
+    font-size: 32px;
+    margin-bottom: 6px;
+  }
+  .prize-rank {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+  .prize-card.gold .prize-rank { color: #fbbf24; }
+  .prize-card.silver .prize-rank { color: #cbd5e1; }
+  .prize-card.bronze .prize-rank { color: #fb923c; }
+  .prize-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  /* Countdown Blocks */
+  .countdown-timer-box {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 0;
+  }
+  .time-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: rgba(10, 15, 30, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius-sm);
+    min-width: 58px;
+    padding: 8px 6px;
+  }
+  .time-num {
+    font-size: 24px;
+    font-weight: 900;
+    color: #fbbf24;
+    font-family: monospace, sans-serif;
+    line-height: 1;
+  }
+  .time-sub {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+  .time-colon {
+    font-size: 22px;
+    font-weight: 900;
+    color: var(--text-muted);
+  }
+
+  /* Modal */
+  .game-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .game-modal.open {
+    display: flex;
+  }
+  .game-modal-content {
+    background: #0f172a;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: var(--radius-md);
+    width: 100%;
+    max-width: 400px;
+    padding: 24px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="welcome-banner">
-  <div class="welcome-text">
-    <h2>سلام، {{ tg_user.first_name }} 👋</h2>
-    <p>به پنل مدیریت BananaBot خوش آمدید.</p>
+<!-- CSRF Token for Game AJAX requests -->
+{% csrf_token %}
+
+<!-- Welcome & Tournament Header Banner -->
+<div class="welcome-banner" style="margin-bottom: 16px;">
+  <div class="welcome-text" style="width: 100%;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <h2 style="margin-bottom: 4px;">سلام، <span class="game-user-nickname">{{ tg_user.first_name }}</span> 👋</h2>
+        <p style="margin: 0; font-size: 13.5px; color: var(--text-secondary);">
+          به بازی کلیکی و رقابت هفتگی خوش آمدید! کلیک کنید، امتیاز جمع کنید و پایان جمعه شب برنده اشتراک رایگان شوید.
+        </p>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="soundToggleBtn" class="btn btn-outline btn-sm" style="padding: 6px 12px;" title="صدا">
+          <i id="soundIcon" class="fa fa-volume-high"></i>
+        </button>
+        <button id="editNicknameBtn" class="btn btn-ghost btn-sm" style="padding: 6px 12px; font-size: 12px;" title="تغییر نام مستعار">
+          <i class="fa fa-pen-to-square"></i> نام مستعار
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="stats-grid">
-  <div class="stat-card accent-blue">
-    <div class="stat-icon"><i class="fa fa-wallet"></i></div>
-    <div class="stat-body">
-      <div class="stat-value">{{ db_user.balance|default:0|floatformat:0 }}</div>
-      <div class="stat-label">موجودی (تومان)</div>
+<!-- Weekly Competition Status Bar -->
+<div class="morse-status-bar" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: rgba(99, 102, 241, 0.08); border-radius: var(--radius-sm); border: 1px solid rgba(99, 102, 241, 0.25); margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; gap: 8px;">
+  <span style="color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
+    <i class="fa fa-trophy" style="color: #fbbf24;"></i>
+    مسابقه هفتگی: <strong style="color: #a5b4fc;">۳ اشتراک رایگان VPN اختصاصی</strong>
+  </span>
+  <span style="font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
+    <i class="fa fa-clock" style="color: #818cf8;"></i>
+    <span id="topbarFridayCountdown">پایان مسابقه: جمعه شب ساعت ۲۳:۵۹:۵۹</span>
+  </span>
+</div>
+
+<!-- Dashboard Interactive Navigation Tabs -->
+<div class="game-tab-nav">
+  <button type="button" class="game-nav-btn active" data-game-tab="tab-arena">
+    <i class="fa fa-gamepad"></i> میدان مسابقه و کلیک
+  </button>
+  <button type="button" class="game-nav-btn" data-game-tab="tab-upgrades">
+    <i class="fa fa-rocket"></i> ارتقا و سرورها
+  </button>
+  <button type="button" class="game-nav-btn" data-game-tab="tab-leaderboard">
+    <i class="fa fa-trophy"></i> جدول رده‌بندی و جوایز
+  </button>
+  <button type="button" class="game-nav-btn" data-game-tab="tab-services">
+    <i class="fa fa-server"></i> سرویس‌ها و کیف پول من
+  </button>
+</div>
+
+<!-- =========================================================
+     TAB 1: ARENA (CLICKER & MORS GAME)
+     ========================================================= -->
+<div id="tab-arena" class="game-tab-view active">
+  <div class="card" style="margin-bottom: 20px;">
+
+    <!-- Turbo Active Warning (3X Mode) -->
+    <div class="turbo-active-indicator" id="turboActiveIndicator" style="display: none;">
+      <span><i class="fa fa-rocket"></i> حالت فوق‌سریع ۳ برابری (Turbo 3X) فعال شد!</span>
+      <span class="turbo-timer" id="turboTimerDisplay">15s</span>
     </div>
-    <div class="stat-sub"><a href="{% url 'panel:user_wallet' %}">افزایش موجودی ←</a></div>
+
+    <!-- Central Tap Zone -->
+    <div class="tap-zone-wrapper">
+      <div class="tap-glow-bg"></div>
+      
+      <div class="core-tap-button" id="coreTapBtn">
+        <div class="pulse-ring pulse-1"></div>
+        <div class="pulse-ring pulse-2"></div>
+        
+        <div class="core-disc">
+          <div class="disc-inner-grid"></div>
+          
+          <div class="shield-center">
+            <svg viewBox="0 0 100 100" fill="none" class="shield-svg">
+              <path d="M50 10 L85 24 V50 C85 72 50 90 50 90 C50 90 15 72 15 50 V24 Z" 
+                    stroke="url(#shieldBorder)" stroke-width="4" fill="rgba(10, 15, 30, 0.88)"/>
+              <path d="M50 22 L75 33 V50 C75 66 50 78 50 78 C50 78 25 66 25 50 V33 Z" 
+                    fill="url(#shieldGlow)" opacity="0.4"/>
+              <circle cx="40" cy="48" r="4" fill="#818cf8"/>
+              <rect x="50" y="45.5" width="16" height="5" rx="2.5" fill="#818cf8"/>
+              <circle cx="40" cy="60" r="4" fill="#a855f7"/>
+              <circle cx="54" cy="60" r="4" fill="#a855f7"/>
+              <defs>
+                <linearGradient id="shieldBorder" x1="0" y1="0" x2="100" y2="100">
+                  <stop stop-color="#6366f1"/>
+                  <stop offset="0.5" stop-color="#8b5cf6"/>
+                  <stop offset="1" stop-color="#a855f7"/>
+                </linearGradient>
+                <radialGradient id="shieldGlow" cx="50" cy="50" r="40">
+                  <stop stop-color="#6366f1" stop-opacity="0.8"/>
+                  <stop offset="1" stop-color="#a855f7" stop-opacity="0"/>
+                </radialGradient>
+              </defs>
+            </svg>
+            <div class="tap-action-text">ضربه بزنید!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Energy Progress Bar -->
+    <div class="energy-section">
+      <div class="energy-labels">
+        <span class="energy-title">
+          <i class="fa fa-bolt" style="color: #fbbf24;"></i>
+          انرژی باقی‌مانده
+        </span>
+        <span class="energy-numbers">
+          <span id="currentEnergyDisplay">1000</span> / <span id="maxEnergyDisplay">1000</span>
+        </span>
+      </div>
+      <div class="energy-progress-track">
+        <div class="energy-progress-fill" id="energyFill" style="width: 100%;"></div>
+      </div>
+    </div>
+
   </div>
-  <div class="stat-card accent-green">
-    <div class="stat-icon"><i class="fa fa-server"></i></div>
-    <div class="stat-body">
-      <div class="stat-value">{{ subscriptions|length }}</div>
-      <div class="stat-label">سرویس‌های من</div>
+
+  <!-- Game KPI Stats Grid -->
+  <div class="stats-grid">
+    <div class="stat-card accent-blue">
+      <div class="stat-icon"><i class="fa fa-coins"></i></div>
+      <div class="stat-body">
+        <div class="stat-value" id="kpiBalance">0</div>
+        <div class="stat-label">امتیاز کل شما</div>
+      </div>
+      <div class="stat-sub">امتیاز مسابقه این هفته: <strong id="seasonScoreDisplay" style="color:#fbbf24;">0</strong></div>
     </div>
-    <div class="stat-sub"><a href="{% url 'panel:user_services' %}">مشاهده ←</a></div>
+
+    <div class="stat-card accent-green">
+      <div class="stat-icon"><i class="fa fa-bolt"></i></div>
+      <div class="stat-body">
+        <div class="stat-value"><span id="passiveRateDisplay">0</span> <span style="font-size:13px;color:var(--text-muted);">/ثانیه</span></div>
+        <div class="stat-label">امتیاز خودکار در ثانیه</div>
+      </div>
+      <div class="stat-sub">
+        <a href="javascript:void(0)" onclick="GameApp.switchTab('tab-upgrades')" style="color:var(--success);text-decoration:none;">خرید و تقویت سرورها ←</a>
+      </div>
+    </div>
+
+    <div class="stat-card accent-purple">
+      <div class="stat-icon"><i class="fa fa-hand-pointer"></i></div>
+      <div class="stat-body">
+        <div class="stat-value">+<span id="tapPowerDisplay">1</span></div>
+        <div class="stat-label">قدرت هر کلیک</div>
+      </div>
+      <div class="stat-sub"><span style="color:#c084fc;">امتیاز به ازای هر ضربه</span></div>
+    </div>
+
+    <div class="stat-card accent-orange">
+      <div class="stat-icon"><i class="fa fa-trophy"></i></div>
+      <div class="stat-body">
+        <div class="stat-value" id="myRankDisplay">-</div>
+        <div class="stat-label">رتبه شما در مسابقه</div>
+      </div>
+      <div class="stat-sub">
+        <a href="javascript:void(0)" onclick="GameApp.switchTab('tab-leaderboard')" style="color:#fbbf24;text-decoration:none;">مشاهده جوایز ۳ نفر اول ←</a>
+      </div>
+    </div>
   </div>
 </div>
 
-{% if subscriptions %}
-<div class="card mt-3">
-  <h2 class="card-title">آخرین سرویس‌ها</h2>
-  {% for s in subscriptions|slice:":3" %}
-  <div class="service-row">
-    <div class="service-icon">
-      <i class="fa {% if s.is_suspended %}fa-circle-pause{% elif s.status == 'active' %}fa-shield-halved{% else %}fa-circle-xmark{% endif %}"></i>
+<!-- =========================================================
+     TAB 2: UPGRADES & SERVERS
+     ========================================================= -->
+<div id="tab-upgrades" class="game-tab-view">
+  <div class="welcome-banner" style="margin-bottom: 20px;">
+    <div class="welcome-text">
+      <h2>ارتقا و سرورهای استخراج خودکار 🚀</h2>
+      <p>با ارتقای سرورها، حتی وقتی در ربات و بازی حضور ندارید هم به صورت خودکار در هر ثانیه امتیاز کسب می‌کنید.</p>
     </div>
-    <div class="service-info">
-      <div class="service-name">{{ s.product_name|default:"سرویس" }}</div>
-      <div class="service-meta">{{ s.panel_name }} — {% if s.is_suspended %}{{ s.suspended_reason }}{% else %}{{ s.status_label|default:s.status }}{% endif %}</div>
-    </div>
-    <span class="{{ s.badge_class|default:'badge-green' }}">{{ s.status_label|default:s.status }}</span>
   </div>
-  {% endfor %}
-  <a href="{% url 'panel:user_services' %}" class="btn btn-ghost mt-2">مشاهده همه ←</a>
+
+  <div class="filter-tabs" style="margin-bottom: 18px;">
+    <button type="button" class="filter-tab active" data-filter="all">همه ارتقاها</button>
+    <button type="button" class="filter-tab" data-filter="server">سرورهای خودکار</button>
+    <button type="button" class="filter-tab" data-filter="tap">قدرت کلیک و انرژی</button>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title" style="margin-bottom: 12px;">
+      <i class="fa fa-store" style="color: var(--primary);"></i>
+      فهرست ارتقاها و نودهای اختصاصی
+    </h2>
+    <div id="upgradesList">
+      <div class="loading-spinner">در حال بارگذاری ارتقاها...</div>
+    </div>
+  </div>
 </div>
-{% else %}
-<div class="card mt-3 empty-card">
-  <i class="fa fa-box-open fa-2x"></i>
-  <p>هنوز سرویسی خریداری نکرده‌اید.</p>
-  <a href="{% url 'panel:user_buy' %}" class="btn btn-primary">خرید سرویس</a>
+
+<!-- =========================================================
+     TAB 3: LEADERBOARD & PRIZES
+     ========================================================= -->
+<div id="tab-leaderboard" class="game-tab-view">
+
+  <!-- Friday Night Countdown Card -->
+  <div class="card" style="margin-bottom: 20px; border-color: rgba(245, 158, 11, 0.35);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+      <span class="badge badge-amber" id="seasonNumberBadge">مسابقه این هفته</span>
+      <span style="font-size: 13px; color: var(--text-secondary);">
+        <i class="fa fa-clock" style="color: #fbbf24;"></i> پایان مسابقه: <strong>جمعه شب ساعت ۲۳:۵۹:۵۹</strong>
+      </span>
+    </div>
+
+    <!-- Countdown Timer Digits -->
+    <div class="countdown-timer-box">
+      <div class="time-block">
+        <span class="time-num" id="cdDays">00</span>
+        <span class="time-sub">روز</span>
+      </div>
+      <span class="time-colon">:</span>
+      <div class="time-block">
+        <span class="time-num" id="cdHours">00</span>
+        <span class="time-sub">ساعت</span>
+      </div>
+      <span class="time-colon">:</span>
+      <div class="time-block">
+        <span class="time-num" id="cdMinutes">00</span>
+        <span class="time-sub">دقیقه</span>
+      </div>
+      <span class="time-colon">:</span>
+      <div class="time-block">
+        <span class="time-num" id="cdSeconds">00</span>
+        <span class="time-sub">ثانیه</span>
+      </div>
+    </div>
+
+    <!-- Top 3 Prizes Showcase -->
+    <div class="prizes-grid">
+      <div class="prize-card gold">
+        <div class="prize-icon">🥇</div>
+        <div class="prize-rank">رتبه اول (طلا)</div>
+        <div class="prize-title">اشتراک ۳ ماهه نامحدود VIP</div>
+      </div>
+      <div class="prize-card silver">
+        <div class="prize-icon">🥈</div>
+        <div class="prize-rank">رتبه دوم (نقره)</div>
+        <div class="prize-title">اشتراک ۲ ماهه Pro</div>
+      </div>
+      <div class="prize-card bronze">
+        <div class="prize-icon">🥉</div>
+        <div class="prize-rank">رتبه سوم (برنز)</div>
+        <div class="prize-title">اشتراک ۱ ماهه Basic</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Standing Card -->
+  <div class="card" style="margin-bottom: 16px; background: rgba(99, 102, 241, 0.08); border-color: rgba(99, 102, 241, 0.25);">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 2px;">جایگاه فعلی شما در لیگ این هفته:</div>
+        <div style="font-size: 18px; font-weight: 800; color: #fff;">
+          <span id="myStandingRank">-</span>
+        </div>
+      </div>
+      <div style="text-align: left;">
+        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 2px;">امتیاز هفتگی شما:</div>
+        <div style="font-size: 18px; font-weight: 800; color: #fbbf24;" id="myStandingScore">
+          0 امتیاز
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subtabs: Current vs Past Winners -->
+  <div class="filter-tabs" style="margin-bottom: 16px;">
+    <button type="button" class="filter-tab active" id="btnShowCurrentLb">جدول رده‌بندی فعلی (۵۰ نفر برتر)</button>
+    <button type="button" class="filter-tab" id="btnShowPastWinners">تالار افتخارات و برندگان دوره‌های قبل</button>
+  </div>
+
+  <!-- Current Leaderboard Container -->
+  <div id="currentLbContainer">
+    <div class="card">
+      <div id="leaderboardList">
+        <div class="loading-spinner">در حال دریافت رده‌بندی...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Past Winners Container -->
+  <div id="pastWinnersContainer" style="display: none;">
+    <div class="card">
+      <div id="pastWinnersList">
+        <div class="loading-spinner">در حال دریافت تاریخچه برندگان...</div>
+      </div>
+    </div>
+  </div>
+
 </div>
-{% endif %}
+
+<!-- =========================================================
+     TAB 4: MY SERVICES & WALLET (ORIGINAL DASHBOARD FUNCTIONALITY)
+     ========================================================= -->
+<div id="tab-services" class="game-tab-view">
+
+  <div class="stats-grid">
+    <div class="stat-card accent-blue">
+      <div class="stat-icon"><i class="fa fa-wallet"></i></div>
+      <div class="stat-body">
+        <div class="stat-value">{{ db_user.balance|default:0|floatformat:0 }}</div>
+        <div class="stat-label">موجودی کیف پول (تومان)</div>
+      </div>
+      <div class="stat-sub"><a href="{% url 'panel:user_wallet' %}">افزایش موجودی ←</a></div>
+    </div>
+    <div class="stat-card accent-green">
+      <div class="stat-icon"><i class="fa fa-server"></i></div>
+      <div class="stat-body">
+        <div class="stat-value">{{ subscriptions|length }}</div>
+        <div class="stat-label">سرویس‌های من</div>
+      </div>
+      <div class="stat-sub"><a href="{% url 'panel:user_services' %}">مشاهده همه ←</a></div>
+    </div>
+  </div>
+
+  {% if subscriptions %}
+  <div class="card mt-3">
+    <h2 class="card-title">آخرین سرویس‌های شما</h2>
+    {% for s in subscriptions|slice:":5" %}
+    <div class="service-row">
+      <div class="service-icon">
+        <i class="fa {% if s.is_suspended %}fa-circle-pause{% elif s.status == 'active' %}fa-shield-halved{% else %}fa-circle-xmark{% endif %}"></i>
+      </div>
+      <div class="service-info">
+        <div class="service-name">{{ s.product_name|default:"سرویس" }}</div>
+        <div class="service-meta">{{ s.panel_name }} — {% if s.is_suspended %}{{ s.suspended_reason }}{% else %}{{ s.status_label|default:s.status }}{% endif %}</div>
+      </div>
+      <span class="{{ s.badge_class|default:'badge-green' }}">{{ s.status_label|default:s.status }}</span>
+    </div>
+    {% endfor %}
+    <div style="display: flex; gap: 10px; margin-top: 14px;">
+      <a href="{% url 'panel:user_services' %}" class="btn btn-ghost">مشاهده همه سرویس‌ها ←</a>
+      <a href="{% url 'panel:user_buy' %}" class="btn btn-primary">خرید سرویس جدید</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="card mt-3 empty-card">
+    <i class="fa fa-box-open fa-2x"></i>
+    <p>هنوز سرویسی خریداری نکرده‌اید.</p>
+    <a href="{% url 'panel:user_buy' %}" class="btn btn-primary">خرید سرویس VPN</a>
+  </div>
+  {% endif %}
+
+</div>
+
+<!-- Nickname Edit Modal -->
+<div class="game-modal" id="nicknameModal">
+  <div class="game-modal-content">
+    <h3 style="margin-top: 0; margin-bottom: 12px; font-size: 16px;">تغییر نام مستعار در بازی</h3>
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+      این نام در جدول رده‌بندی مسابقه هفتگی به سایر کاربران نمایش داده می‌شود.
+    </p>
+    <div class="form-group" style="margin-bottom: 20px;">
+      <input type="text" id="nicknameInput" class="form-control" maxlength="24" placeholder="نام مستعار شما (۲ تا ۲۴ حرف)..." style="width: 100%; padding: 10px 14px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: #fff; font-family: inherit;">
+    </div>
+    <div style="display: flex; justify-content: flex-end; gap: 10px;">
+      <button type="button" class="btn btn-ghost" id="cancelNicknameBtn">انصراف</button>
+      <button type="button" class="btn btn-primary" id="saveNicknameBtn">ذخیره نام</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/game/audio.js' %}"></script>
+<script src="{% static 'js/game/game_api.js' %}"></script>
+<script src="{% static 'js/game/game_engine.js' %}"></script>
+<script src="{% static 'js/game/game_upgrades.js' %}"></script>
+<script src="{% static 'js/game/game_leaderboard.js' %}"></script>
+<script src="{% static 'js/game/game_app.js' %}"></script>
 {% endblock %}

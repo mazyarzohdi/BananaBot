@@ -7,19 +7,26 @@ event loop conflicts.
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from django.conf import settings
 
 
 import os
-import psycopg2
-from psycopg2.extras import DictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+except ImportError:
+    psycopg2 = None
+    DictCursor = None
 
 @contextmanager
 def get_conn():
     db_type = os.environ.get("DB_TYPE", "sqlite").strip().strip('\'"').lower()
     
     if db_type == "postgres":
+        if psycopg2 is None:
+            raise ImportError("psycopg2 is required for PostgreSQL support. Install psycopg2-binary.")
         conn = psycopg2.connect(
             dbname=os.environ.get("DB_NAME", "bananabot"),
             user=os.environ.get("DB_USER", "bananabot"),
@@ -975,3 +982,139 @@ def get_api_logs(reseller_id: int, limit: int = 50) -> list[dict]:
             (reseller_id, limit),
         ).fetchall()
     return rows_to_list(rows)
+
+
+# ── Game (Mors VPN Clicker & Weekly Competition) ─────────────────────────────
+
+def get_game_profile(telegram_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM game_profiles WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def create_or_get_game_profile(telegram_id: int, user_id: int | None = None, nickname: str | None = None) -> dict:
+    profile = get_game_profile(telegram_id)
+    if profile:
+        return profile
+    now = int(time.time() * 1000)
+    clean_nick = (nickname or f"User_{telegram_id}")[:24]
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO game_profiles "
+            "(telegram_id, user_id, nickname, balance, total_score, energy, max_energy, energy_recovery_rate, tap_power, passive_rate, last_active_time) "
+            "VALUES (?, ?, ?, 0, 0, 1000, 1000, 4, 1, 0, ?)",
+            (telegram_id, user_id, clean_nick, now)
+        )
+    return get_game_profile(telegram_id)
+
+
+def update_game_profile(telegram_id: int, **fields):
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields.keys())
+    vals = list(fields.values()) + [telegram_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE game_profiles SET {cols} WHERE telegram_id = ?", vals)
+
+
+def get_game_upgrades(telegram_id: int) -> dict[str, int]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT upgrade_id, level FROM game_upgrades WHERE telegram_id = ?",
+            (telegram_id,)
+        ).fetchall()
+    return {r["upgrade_id"]: r["level"] for r in rows}
+
+
+def set_game_upgrade(telegram_id: int, upgrade_id: str, level: int):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO game_upgrades (telegram_id, upgrade_id, level) VALUES (?, ?, ?) "
+            "ON CONFLICT(telegram_id, upgrade_id) DO UPDATE SET level = excluded.level, updated_at = datetime('now')",
+            (telegram_id, upgrade_id, level)
+        )
+
+
+def get_game_leaderboard(limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT telegram_id, nickname, total_score, passive_rate, tap_power "
+            "FROM game_profiles "
+            "WHERE total_score > 0 "
+            "ORDER BY total_score DESC "
+            "LIMIT ?",
+            (limit,)
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def get_game_user_rank(total_score: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count_higher FROM game_profiles WHERE total_score > ?",
+            (total_score,)
+        ).fetchone()
+    count = row["count_higher"] if row else 0
+    return count + 1
+
+
+def get_active_season() -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM game_seasons WHERE is_closed = 0 ORDER BY season_number DESC LIMIT 1"
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def create_game_season(season_number: int, start_time: int, end_time: int) -> dict:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO game_seasons (season_number, start_time, end_time, is_closed) VALUES (?, ?, ?, 0)",
+            (season_number, start_time, end_time)
+        )
+    return get_active_season()
+
+
+def close_game_season(season_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE game_seasons SET is_closed = 1 WHERE id = ?", (season_id,))
+
+
+def get_top_season_players(limit: int = 3) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT telegram_id, nickname, total_score "
+            "FROM game_profiles "
+            "WHERE total_score > 0 "
+            "ORDER BY total_score DESC "
+            "LIMIT ?",
+            (limit,)
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def record_game_winner(season_number: int, telegram_id: int, nickname: str, rank: int, score: int, prize_title: str, prize_code: str):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO game_winners (season_number, telegram_id, nickname, rank, score, prize_title, prize_code) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (season_number, telegram_id, nickname, rank, score, prize_title, prize_code)
+        )
+
+
+def reset_season_scores():
+    with get_conn() as conn:
+        conn.execute("UPDATE game_profiles SET total_score = 0")
+
+
+def get_past_game_winners(limit: int = 15) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT season_number, telegram_id, nickname, rank, score, prize_title, prize_code, created_at "
+            "FROM game_winners "
+            "ORDER BY season_number DESC, rank ASC "
+            "LIMIT ?",
+            (limit,)
+        ).fetchall()
+    return rows_to_list(rows)
+

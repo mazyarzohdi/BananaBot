@@ -304,6 +304,54 @@ CREATE TABLE IF NOT EXISTS referral_earnings (
     FOREIGN KEY (referred_user_id) REFERENCES users(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
+
+CREATE TABLE IF NOT EXISTS game_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER UNIQUE NOT NULL,
+    user_id INTEGER,
+    nickname TEXT,
+    balance INTEGER DEFAULT 0,
+    total_score INTEGER DEFAULT 0,
+    energy INTEGER DEFAULT 1000,
+    max_energy INTEGER DEFAULT 1000,
+    energy_recovery_rate INTEGER DEFAULT 4,
+    tap_power INTEGER DEFAULT 1,
+    passive_rate INTEGER DEFAULT 0,
+    last_active_time INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (telegram_id) REFERENCES users(telegram_id)
+);
+
+CREATE TABLE IF NOT EXISTS game_upgrades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    upgrade_id TEXT NOT NULL,
+    level INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(telegram_id, upgrade_id)
+);
+
+CREATE TABLE IF NOT EXISTS game_seasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_number INTEGER UNIQUE NOT NULL,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
+    is_closed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS game_winners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_number INTEGER NOT NULL,
+    telegram_id INTEGER NOT NULL,
+    nickname TEXT,
+    rank INTEGER NOT NULL,
+    score INTEGER NOT NULL,
+    prize_title TEXT,
+    prize_code TEXT,
+    is_claimed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -357,6 +405,11 @@ DEFAULT_SETTINGS = {
     "backup_schedule_interval_hours": "24",
     "backup_schedule_retention_count": "14",
     "backup_last_run_at": "0",
+    "game_enabled": "1",
+    "game_friday_night_hour": "23",
+    "game_prize_rank1": "کانفیگ اختصاصی ۳ ماهه نامحدود VIP",
+    "game_prize_rank2": "کانفیگ اختصاصی ۲ ماهه Pro",
+    "game_prize_rank3": "کانفیگ اختصاصی ۱ ماهه Basic",
 }
 
 # Historical migrations that predate the generic column-reconciler below, or
@@ -660,7 +713,7 @@ def reconcile(db_path: str = "data/bot.db") -> dict:
         except sqlite3.OperationalError:
             pass
 
-        # ایندکس‌های کمکی برای API نمایندگان، کوپن‌ها، پرداخت‌ها و سرویس‌ها
+        # ایندکس‌های کمکی برای API نمایندگان، کوپن‌ها، پرداخت‌ها، سرویس‌ها و بازی کلیکی
         for idx_stmt in (
             "CREATE INDEX IF NOT EXISTS idx_api_keys_reseller ON api_keys(reseller_id)",
             "CREATE INDEX IF NOT EXISTS idx_api_nonces_key_created ON api_nonces(api_key_id, created_at)",
@@ -669,6 +722,8 @@ def reconcile(db_path: str = "data/bot.db") -> dict:
             "CREATE INDEX IF NOT EXISTS idx_coupon_uses_coupon_user ON coupon_uses(coupon_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_game_profiles_score ON game_profiles(total_score DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_game_winners_season ON game_winners(season_number, rank)",
         ):
             try:
                 conn.execute(idx_stmt)

@@ -1,0 +1,835 @@
+/* ==========================================================================
+   Mors VPN Game Engine & Clicker Extensions (BananaBot Design Match)
+   ========================================================================== */
+
+/* Tabs Control */
+.tab-view {
+  display: none;
+  animation: tabFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.tab-view.active {
+  display: block;
+}
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Central Tap Clicker */
+.tap-zone-wrapper {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 30px 0 20px;
+  margin: 10px 0 16px;
+}
+
+.tap-glow-bg {
+  position: absolute;
+  width: 260px;
+  height: 260px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.22) 0%, rgba(168, 85, 247, 0.12) 50%, transparent 70%);
+  filter: blur(30px);
+  pointer-events: none;
+}
+
+.core-tap-button {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 0.08s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.core-tap-button:active {
+  transform: scale(0.93);
+}
+
+.ring-pulse {
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(99, 102, 241, 0.4);
+  pointer-events: none;
+}
+
+.ring-1 {
+  width: 240px;
+  height: 240px;
+  animation: rotateCW 25s linear infinite;
+}
+
+.ring-2 {
+  width: 260px;
+  height: 260px;
+  border-style: dotted;
+  border-color: rgba(168, 85, 247, 0.3);
+  animation: rotateCCW 35s linear infinite;
+}
+
+@keyframes rotateCW {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes rotateCCW {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+.core-disc {
+  width: 206px;
+  height: 206px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #131b2e, #0a0f1d);
+  border: 2px solid rgba(99, 102, 241, 0.45);
+  box-shadow: 
+    0 0 30px rgba(99, 102, 241, 0.25),
+    inset 0 0 25px rgba(168, 85, 247, 0.18);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.core-tap-button.turbo-mode .core-disc {
+  border-color: var(--warning);
+  box-shadow: 
+    0 0 45px rgba(245, 158, 11, 0.45),
+    inset 0 0 30px rgba(245, 158, 11, 0.3);
+}
+
+.disc-inner-grid {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(rgba(99, 102, 241, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.06) 1px, transparent 1px);
+  background-size: 16px 16px;
+  border-radius: 50%;
+}
+
+.shield-center {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.shield-svg {
+  width: 82px;
+  height: 82px;
+  filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.6));
+}
+
+.tap-action-text {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #a5b4fc;
+  margin-top: 4px;
+}
+
+/* Floating Numbers on Tap */
+.floating-tap-number {
+  position: fixed;
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 12px var(--primary-glow), 0 0 20px rgba(168, 85, 247, 0.6);
+  pointer-events: none;
+  z-index: 9999;
+  animation: floatUpAnim 0.75s ease-out forwards;
+}
+
+@keyframes floatUpAnim {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: translateY(-40px) scale(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-75px) scale(0.85);
+  }
+}
+
+/* Morse Turbo Banner */
+.morse-turbo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  backdrop-filter: var(--glass-blur);
+}
+
+.turbo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.turbo-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #818cf8;
+}
+
+.morse-code-symbols {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #fff;
+}
+
+.turbo-active-indicator {
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.35);
+  animation: pulseBar 1s infinite alternate;
+}
+@keyframes pulseBar {
+  from { opacity: 0.9; }
+  to { opacity: 1; }
+}
+
+/* Energy Progress Section */
+.energy-section {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  backdrop-filter: var(--glass-blur);
+  margin-top: 10px;
+}
+
+.energy-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.energy-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.energy-numbers {
+  font-weight: 700;
+  color: #a5b4fc;
+}
+
+.energy-progress-track {
+  width: 100%;
+  height: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.energy-progress-fill {
+  height: 100%;
+  background: var(--primary-gradient);
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 10px var(--primary-glow);
+  transition: width 0.2s linear;
+}
+
+/* Countdown Timer Box for Weekly Season */
+.countdown-timer-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  direction: ltr;
+  margin: 14px 0 6px;
+}
+
+.time-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  min-width: 54px;
+}
+
+.time-num {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fbbf24;
+}
+
+.time-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.time-colon {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+/* Top 3 Prize Cards */
+.prizes-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.prize-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  backdrop-filter: var(--glass-blur);
+  position: relative;
+  overflow: hidden;
+}
+.prize-card.rank-1 {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), var(--bg-surface));
+}
+.prize-card.rank-2 {
+  border-color: rgba(203, 213, 225, 0.35);
+  background: linear-gradient(90deg, rgba(203, 213, 225, 0.1), var(--bg-surface));
+}
+.prize-card.rank-3 {
+  border-color: rgba(249, 115, 22, 0.35);
+  background: linear-gradient(90deg, rgba(249, 115, 22, 0.1), var(--bg-surface));
+}
+.prize-medal {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+.prize-info {
+  display: flex;
+  flex-direction: column;
+}
+.prize-rank-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.prize-details {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  margin: 2px 0;
+}
+.prize-feature {
+  font-size: 11.5px;
+  color: #38bdf8;
+}
+
+/* Leaderboard Subtabs & My Standing */
+.subtabs-bar {
+  display: flex;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  margin-bottom: 14px;
+  gap: 6px;
+}
+.subtab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.subtab-btn.active {
+  background: rgba(99, 102, 241, 0.18);
+  color: #a5b4fc;
+  font-weight: 700;
+}
+
+.my-standing-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 18px;
+  margin-bottom: 12px;
+}
+.standing-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e0e7ff;
+}
+.standing-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.my-rank-tag {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fbbf24;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+}
+.my-score-tag {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+}
+
+/* Modal Overlay & Card (Matching BananaBot Style) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.modal-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--bg-surface-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 26px 22px;
+  box-shadow: var(--shadow-lg), 0 0 35px var(--primary-glow);
+}
+.modal-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+.modal-badge-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 12px;
+  background: rgba(99, 102, 241, 0.16);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: #818cf8;
+}
+.modal-header h3 {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 6px;
+}
+.modal-header p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.modal-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 12.5px;
+  padding: 8px 12px;
+  border-radius: var(--radius-xs);
+  margin-bottom: 12px;
+}
+
+
+/* Floating Turbo Rocket */
+.turbo-rocket-floater {
+  position: absolute;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f59e0b, #ef4444);
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.75), 0 0 12px rgba(239, 68, 68, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  cursor: pointer;
+  z-index: 85;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  border: 2px solid #fff;
+  animation: rocketBob 1.6s ease-in-out infinite alternate, rocketSpawn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  transition: transform 0.15s, opacity 0.4s;
+}
+
+.turbo-rocket-floater:hover,
+.turbo-rocket-floater:active {
+  transform: scale(1.18);
+}
+
+.turbo-rocket-floater.fade-out {
+  opacity: 0;
+  transform: scale(0.3) translateY(-25px);
+  pointer-events: none;
+}
+
+@keyframes rocketBob {
+  0% {
+    transform: translateY(0) rotate(-12deg);
+  }
+  100% {
+    transform: translateY(-10px) rotate(14deg);
+  }
+}
+
+@keyframes rocketSpawn {
+  0% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.rocket-burst-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 3px solid #f59e0b;
+  pointer-events: none;
+  animation: burstRing 0.6s ease-out forwards;
+  z-index: 84;
+}
+
+@keyframes burstRing {
+  0% { width: 30px; height: 30px; opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { width: 110px; height: 110px; opacity: 0; transform: translate(-50%, -50%) scale(2); }
+}
+
+
+/* ==========================================================================
+   UI Polish: Typography, Filter Tabs & Navigation Bar Styling
+   ========================================================================== */
+
+/* Universal Persian Typography Enforcement (Targeting text & UI elements, NOT icons) */
+html, body,
+button, input, select, textarea,
+p, h1, h2, h3, h4, h5, h6,
+.btn, .tab, .filter-tab, .subtab-btn,
+.bottom-nav-item, .bottom-nav-item span,
+.nav-item, .nav-item span,
+.page-title, .logo-text, .user-name, .user-role,
+.stat-value, .stat-label, .stat-sub,
+.service-name, .service-meta, .badge,
+.tab-content, .card, .modal-content, .toast, .prize-name, .prize-tag {
+  font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+}
+
+/* Bulletproof FontAwesome Icon Font Enforcement */
+.fa, .fas, .far, .fab, .fa-solid, .fa-regular, .fa-brands,
+i[class*="fa-"], i[class^="fa-"], span[class*="fa-"] {
+  font-family: "Font Awesome 6 Free" !important;
+  font-weight: 900 !important;
+  font-style: normal !important;
+  font-variant: normal !important;
+  line-height: 1 !important;
+  text-rendering: auto !important;
+  display: inline-block;
+}
+
+.fa-brands, .fab {
+  font-family: "Font Awesome 6 Brands" !important;
+  font-weight: 400 !important;
+}
+
+.fa-regular, .far {
+  font-weight: 400 !important;
+}
+
+/* Ensure pseudo-elements ALWAYS preserve FontAwesome font */
+.fa::before, .fas::before, .far::before, .fab::before,
+.fa-solid::before, .fa-regular::before, .fa-brands::before,
+[class*="fa-"]::before, [class^="fa-"]::before {
+  font-family: "Font Awesome 6 Free" !important;
+  font-style: normal !important;
+  font-variant: normal !important;
+  text-rendering: auto !important;
+}
+
+.fa-brands::before, .fab::before {
+  font-family: "Font Awesome 6 Brands" !important;
+}
+
+/* ── Filter Tabs (Upgrades & Categories) ── */
+.filter-tabs {
+  display: flex !important;
+  gap: 8px !important;
+  background: rgba(15, 22, 36, 0.75) !important;
+  padding: 6px !important;
+  border-radius: var(--radius-md) !important;
+  border: 1px solid var(--border) !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  margin-bottom: 20px !important;
+  backdrop-filter: var(--glass-blur) !important;
+  -webkit-backdrop-filter: var(--glass-blur) !important;
+}
+
+.filter-tab,
+.filter-tabs button,
+.filter-tabs .tab {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  padding: 9px 18px !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: var(--transition) !important;
+  white-space: nowrap !important;
+  user-select: none !important;
+  outline: none !important;
+}
+
+.filter-tab:hover,
+.filter-tabs button:hover,
+.filter-tabs .tab:hover {
+  color: var(--text-main) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.filter-tab.active,
+.filter-tabs button.active,
+.filter-tabs .tab.active {
+  background: var(--primary-gradient) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 14px var(--primary-glow) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+/* ── Mobile Bottom Navigation Bar Ergonomics ── */
+.bottom-nav {
+  display: flex !important;
+  position: fixed !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: var(--bottom-nav-h, 68px) !important;
+  background: rgba(10, 14, 24, 0.94) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-top: 1px solid var(--border) !important;
+  z-index: 100 !important;
+  padding: 0 8px !important;
+  padding-bottom: env(safe-area-inset-bottom, 0) !important;
+  align-items: center !important;
+  justify-content: space-around !important;
+  box-shadow: 0 -4px 25px rgba(0, 0, 0, 0.5) !important;
+}
+
+.bottom-nav-item {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 3px !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  flex: 1 !important;
+  height: 100% !important;
+  border: none !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  transition: var(--transition) !important;
+  outline: none !important;
+}
+
+.bottom-nav-item span {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  color: inherit !important;
+  letter-spacing: 0 !important;
+}
+
+.bottom-nav-item i {
+  font-size: 19px !important;
+  color: inherit !important;
+}
+
+.bottom-nav-item:hover {
+  color: var(--text-main) !important;
+}
+
+.bottom-nav-item.active {
+  color: #818cf8 !important;
+  font-weight: 700 !important;
+}
+
+.bottom-nav-item.active i {
+  transform: translateY(-2px) !important;
+  color: #818cf8 !important;
+}
+
+.bottom-nav-item.active::before {
+  content: '' !important;
+  position: absolute !important;
+  top: 0 !important;
+  width: 28px !important;
+  height: 3px !important;
+  background: var(--primary-gradient) !important;
+  border-radius: 0 0 3px 3px !important;
+  box-shadow: 0 2px 8px var(--primary-glow) !important;
+}
+
+.bottom-nav-action .action-btn-circle {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 50% !important;
+  background: var(--primary-gradient) !important;
+  color: #fff !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 4px 16px var(--primary-glow) !important;
+  margin-top: -10px !important;
+  border: 2px solid rgba(255, 255, 255, 0.18) !important;
+  transition: var(--transition) !important;
+}
+
+.bottom-nav-action .action-btn-circle i {
+  font-size: 20px !important;
+  color: #fff !important;
+}
+
+.bottom-nav-action:active .action-btn-circle {
+  transform: scale(0.92) !important;
+}
+
+/* ── Leaderboard Subtabs ── */
+.subtabs-bar {
+  display: flex !important;
+  background: rgba(15, 22, 36, 0.75) !important;
+  padding: 6px !important;
+  border-radius: var(--radius-md) !important;
+  border: 1px solid var(--border) !important;
+  margin-bottom: 16px !important;
+  gap: 8px !important;
+  backdrop-filter: var(--glass-blur) !important;
+}
+
+.subtab-btn {
+  flex: 1 !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  padding: 10px 16px !important;
+  border-radius: var(--radius-sm) !important;
+  cursor: pointer !important;
+  transition: var(--transition) !important;
+  text-align: center !important;
+  outline: none !important;
+}
+
+.subtab-btn:hover {
+  color: var(--text-main) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+.subtab-btn.active {
+  background: var(--primary-gradient) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 14px var(--primary-glow) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+/* ── Form Controls & Input Styling ── */
+.form-control,
+.input {
+  width: 100% !important;
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-main) !important;
+  padding: 12px 16px !important;
+  border-radius: var(--radius-sm) !important;
+  font-size: 14px !important;
+  outline: none !important;
+  transition: var(--transition) !important;
+}
+
+.form-control:focus,
+.input:focus {
+  border-color: var(--border-focus) !important;
+  box-shadow: var(--border-glow) !important;
+  background: rgba(10, 15, 26, 0.95) !important;
+}
+
+/* ── Button Outlines & States ── */
+.btn-outline,
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.btn-outline:hover:not(:disabled),
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-main) !important;
+  border-color: rgba(255, 255, 255, 0.25) !important;
+}
+
+.btn:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+
