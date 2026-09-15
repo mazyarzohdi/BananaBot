@@ -3,7 +3,10 @@ import asyncio
 import os
 import sys
 import sqlite3
-import asyncpg
+try:
+    import asyncpg
+except ImportError:
+    asyncpg = None
 from pathlib import Path
 
 # Add the parent directory to sys.path so we can import config and db_schema
@@ -13,6 +16,8 @@ from config import get_settings
 from db_schema import SCHEMA, get_dialect_schema
 
 async def get_pg_conn():
+    if asyncpg is None:
+        raise ImportError("asyncpg is required for PostgreSQL migration. Install asyncpg.")
     settings = get_settings()
     db_name = os.environ.get("DB_NAME") or settings.db_name
     db_user = os.environ.get("DB_USER") or settings.db_user
@@ -48,16 +53,22 @@ def get_sqlite_tables(sl_conn):
     rows = sl_conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
     return [r[0] for r in rows]
 
+ALL_TABLES = [
+    "settings", "users", "panels", "products", "reseller_plans", 
+    "resellers", "reseller_configs", "coupons", "coupon_uses", "orders", 
+    "subscriptions", "payments", "trial_apps", "faq", "tutorials", 
+    "api_keys", "api_nonces", "api_request_log", "support_tickets", 
+    "support_ticket_messages", "referral_earnings", "game_seasons", 
+    "game_profiles", "game_upgrades", "game_winners"
+]
+
 async def get_tables(pg_conn):
     rows = await pg_conn.fetch("""
         SELECT table_name 
         FROM information_schema.tables 
         WHERE table_schema = 'public'
     """)
-    schema_tables = ["users", "panels", "products", "subscriptions", "orders", 
-                     "payments", "coupons", "coupon_uses", "settings", 
-                     "reseller_plans", "resellers", "trial_apps"]
-    return [r['table_name'] for r in rows if r['table_name'] in schema_tables]
+    return [r['table_name'] for r in rows if r['table_name'] in ALL_TABLES]
 
 async def migrate_sqlite_to_postgres():
     settings = get_settings()
@@ -80,36 +91,43 @@ async def migrate_sqlite_to_postgres():
     sl_conn = get_sqlite_conn(sqlite_path)
     sl_tables = get_sqlite_tables(sl_conn)
     
-    ordered_tables = ["settings", "users", "panels", "products", "reseller_plans", 
-                      "coupons", "coupon_uses", "orders", "subscriptions", "resellers", 
-                      "payments", "trial_apps"]
-    
     print("Migrating from SQLite to Postgres...")
-    for table in ordered_tables:
-        if table not in tables or table not in sl_tables:
-            continue
-        print(f" -> Migrating table {table}...")
-        await pg_conn.execute(f"TRUNCATE TABLE {table} CASCADE")
-        
-        rows = sl_conn.execute(f"SELECT * FROM {table}").fetchall()
-        if not rows:
-            print(f"    (0 rows)")
-            continue
+    try:
+        await pg_conn.execute("SET session_replication_role = 'replica';")
+    except Exception as e:
+        print(f" -> [Note] Could not set session_replication_role to replica: {e}")
+
+    try:
+        for table in ALL_TABLES:
+            if table not in tables or table not in sl_tables:
+                continue
+            print(f" -> Migrating table {table}...")
+            await pg_conn.execute(f"TRUNCATE TABLE {table} CASCADE")
             
-        columns = rows[0].keys()
-        col_names = ", ".join(columns)
-        placeholders = ", ".join(f"${i+1}" for i in range(len(columns)))
-        query = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
-        
-        values = [tuple(dict(r).values()) for r in rows]
-        await pg_conn.executemany(query, values)
-        print(f"    (migrated {len(values)} rows)")
-        
-        if "id" in columns:
-            try:
-                await pg_conn.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {table}")
-            except Exception as seq_err:
-                print(f" -> [Note] Sequence setval skipped for {table}: {seq_err}")
+            rows = sl_conn.execute(f"SELECT * FROM {table}").fetchall()
+            if not rows:
+                print(f"    (0 rows)")
+                continue
+                
+            columns = rows[0].keys()
+            col_names = ", ".join(columns)
+            placeholders = ", ".join(f"${i+1}" for i in range(len(columns)))
+            query = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
+            
+            values = [tuple(dict(r).values()) for r in rows]
+            await pg_conn.executemany(query, values)
+            print(f"    (migrated {len(values)} rows)")
+            
+            if "id" in columns:
+                try:
+                    await pg_conn.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {table}")
+                except Exception as seq_err:
+                    print(f" -> [Note] Sequence setval skipped for {table}: {seq_err}")
+    finally:
+        try:
+            await pg_conn.execute("SET session_replication_role = 'origin';")
+        except Exception:
+            pass
             
     print("Migration complete!")
     await pg_conn.close()
@@ -133,9 +151,7 @@ async def migrate_postgres_to_sqlite():
         return
 
     sl_tables = get_sqlite_tables(sl_conn)
-    ordered_tables = ["settings", "users", "panels", "products", "reseller_plans", 
-                      "coupons", "coupon_uses", "orders", "subscriptions", "resellers", 
-                      "payments", "trial_apps"]
+    ordered_tables = ALL_TABLES
                       
     print("Migrating from Postgres to SQLite...")
     sl_conn.execute("PRAGMA foreign_keys = OFF")

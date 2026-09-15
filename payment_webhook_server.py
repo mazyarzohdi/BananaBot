@@ -31,8 +31,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+except ImportError:
+    psycopg2 = None
+    DictCursor = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +54,7 @@ DB_PATH = os.environ.get("DATABASE_PATH", "data/bot.db")
 if not os.path.isabs(DB_PATH):
     DB_PATH = str(BASE_DIR / DB_PATH)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+DB_TYPE = os.environ.get("DB_TYPE", "sqlite").strip().strip('\'"').lower()
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
@@ -79,10 +88,71 @@ def parse_transfer_amount_rial(sms_text: str) -> int | None:
         return None
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def get_conn():
+    if DB_TYPE == "postgres" and psycopg2 is not None:
+        conn = psycopg2.connect(
+            dbname=os.environ.get("DB_NAME", "bananabot"),
+            user=os.environ.get("DB_USER", "bananabot"),
+            password=os.environ.get("DB_PASS", ""),
+            host=os.environ.get("DB_HOST", "127.0.0.1"),
+            port=os.environ.get("DB_PORT", "5432"),
+            connect_timeout=5,
+        )
+
+        class PgCursor:
+            def __init__(self, cur):
+                self._cur = cur
+
+            @property
+            def rowcount(self):
+                return self._cur.rowcount
+
+            def fetchone(self):
+                row = self._cur.fetchone()
+                return dict(row) if row else None
+
+            def fetchall(self):
+                rows = self._cur.fetchall()
+                return [dict(r) for r in rows] if rows else []
+
+        class PgConn:
+            def __init__(self, c):
+                self._conn = c
+
+            def execute(self, query, params=()):
+                q = query.replace("?", "%s")
+                q = q.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
+                cur = self._conn.cursor(cursor_factory=DictCursor)
+                cur.execute(q, params)
+                return PgCursor(cur)
+
+            def commit(self):
+                self._conn.commit()
+
+            def rollback(self):
+                self._conn.rollback()
+
+        wrapper = PgConn(conn)
+        try:
+            yield wrapper
+            wrapper.commit()
+        except Exception:
+            wrapper.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def get_setting(key: str, default: str = "") -> str:

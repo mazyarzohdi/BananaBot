@@ -483,13 +483,27 @@ def reconcile_postgres() -> dict:
         return report
 
     async def _async_reconcile():
-        from config import get_settings
-        settings = get_settings()
-        db_name = os.environ.get("DB_NAME") or getattr(settings, "db_name", "bananabot")
-        db_user = os.environ.get("DB_USER") or getattr(settings, "db_user", "bananabot")
-        db_pass = os.environ.get("DB_PASS") or getattr(settings, "db_pass", "")
-        db_host = os.environ.get("DB_HOST") or getattr(settings, "db_host", "127.0.0.1")
-        db_port = os.environ.get("DB_PORT") or getattr(settings, "db_port", "5432")
+        db_name = os.environ.get("DB_NAME")
+        db_user = os.environ.get("DB_USER")
+        db_pass = os.environ.get("DB_PASS")
+        db_host = os.environ.get("DB_HOST")
+        db_port = os.environ.get("DB_PORT")
+
+        if not (db_name and db_user and db_host):
+            try:
+                from config import get_settings
+                settings = get_settings()
+                db_name = db_name or getattr(settings, "db_name", "bananabot")
+                db_user = db_user or getattr(settings, "db_user", "bananabot")
+                db_pass = db_pass or getattr(settings, "db_pass", "")
+                db_host = db_host or getattr(settings, "db_host", "127.0.0.1")
+                db_port = db_port or getattr(settings, "db_port", "5432")
+            except Exception:
+                db_name = db_name or "bananabot"
+                db_user = db_user or "bananabot"
+                db_pass = db_pass or ""
+                db_host = db_host or "127.0.0.1"
+                db_port = db_port or "5432"
 
         conn = await asyncpg.connect(
             database=db_name,
@@ -572,7 +586,17 @@ def reconcile_postgres() -> dict:
             await conn.close()
 
     try:
-        asyncio.run(_async_reconcile())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(asyncio.run, _async_reconcile()).result()
+        else:
+            asyncio.run(_async_reconcile())
     except Exception as e:
         print(f"PostgreSQL reconciliation note: {e}")
 

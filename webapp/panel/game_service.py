@@ -9,7 +9,10 @@ import random
 import string
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from . import db as bot_db
+
+TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
 UPGRADES_CATALOG = {
     "multi_tap": {
@@ -115,11 +118,11 @@ def calculate_cost(upgrade_id: str, current_level: int) -> int:
 
 
 def get_next_friday_night(from_timestamp_ms: int | None = None) -> int:
-    """Calculates Friday night at 23:59:59 (local server time) in milliseconds."""
+    """Calculates Friday night at 23:59:59 (Asia/Tehran timezone) in milliseconds."""
     if from_timestamp_ms is None:
         from_timestamp_ms = int(time.time() * 1000)
 
-    now_dt = datetime.fromtimestamp(from_timestamp_ms / 1000.0)
+    now_dt = datetime.fromtimestamp(from_timestamp_ms / 1000.0, tz=TEHRAN_TZ)
     # Python weekday: Monday is 0, Friday is 4
     days_until_friday = (4 - now_dt.weekday() + 7) % 7
     target = now_dt + timedelta(days=days_until_friday)
@@ -330,6 +333,22 @@ def purchase_upgrade(telegram_id: int, upgrade_id: str) -> dict:
     profile = bot_db.get_game_profile(telegram_id)
     if not profile:
         profile = bot_db.create_or_get_game_profile(telegram_id)
+
+    # Apply any pending offline passive income and energy recovery before purchase
+    now_ms = int(time.time() * 1000)
+    catchup = calculate_catchup(profile, now_ms)
+    if catchup["elapsed_sec"] > 1:
+        bot_db.update_game_profile(
+            telegram_id,
+            energy=catchup["new_energy"],
+            balance=catchup["new_balance"],
+            total_score=catchup["new_total_score"],
+            last_active_time=now_ms,
+        )
+        profile["energy"] = catchup["new_energy"]
+        profile["balance"] = catchup["new_balance"]
+        profile["total_score"] = catchup["new_total_score"]
+        profile["last_active_time"] = now_ms
 
     upgrades_map = bot_db.get_game_upgrades(telegram_id)
     current_level = upgrades_map.get(upgrade_id, 0)

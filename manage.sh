@@ -1355,6 +1355,7 @@ END
     log "Stopping bot services to prevent data corruption during migration..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl stop "$WEBAPP_SERVICE" 2>/dev/null || true
+    systemctl stop "$WEBHOOK_SERVICE" 2>/dev/null || true
     
     log "Running migration script ($direction)..."
     if "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/database/migrate_db.py" --direction "$direction"; then
@@ -1385,10 +1386,12 @@ END
         success "Migration completed successfully!"
         action_restart
         action_webapp_restart
+        systemctl restart "$WEBHOOK_SERVICE" 2>/dev/null || true
     else
         error "Migration failed! Database type remains unchanged (${current_db_type:-sqlite})."
         action_restart
         action_webapp_restart
+        systemctl restart "$WEBHOOK_SERVICE" 2>/dev/null || true
     fi
 }
 
