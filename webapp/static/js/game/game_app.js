@@ -8,7 +8,6 @@ const GameApp = {
   async init() {
     this.bindNavigation();
     this.bindSoundToggle();
-    this.bindNicknameModal();
 
     // Initialize submodules
     if (window.UpgradesModule) window.UpgradesModule.init();
@@ -73,44 +72,6 @@ const GameApp = {
     });
   },
 
-  bindNicknameModal() {
-    const editBtn = document.getElementById('editNicknameBtn');
-    const modal = document.getElementById('nicknameModal');
-    const saveBtn = document.getElementById('saveNicknameBtn');
-    const cancelBtn = document.getElementById('cancelNicknameBtn');
-    const input = document.getElementById('nicknameInput');
-
-    if (editBtn && modal && saveBtn && input) {
-      editBtn.addEventListener('click', () => {
-        input.value = this.user ? this.user.nickname : '';
-        modal.classList.add('open');
-      });
-
-      if (cancelBtn) {
-        cancelBtn.addEventListener('click', () => {
-          modal.classList.remove('open');
-        });
-      }
-
-      saveBtn.addEventListener('click', async () => {
-        const val = input.value.trim();
-        if (val.length < 2 || val.length > 24) {
-          this.showToast('نام مستعار باید بین ۲ تا ۲۴ کاراکتر باشد.', 'danger');
-          return;
-        }
-        try {
-          const res = await window.GameAPI.setNickname(val);
-          if (res && res.success && res.user) {
-            this.updateUserData(res.user);
-            modal.classList.remove('open');
-            this.showToast('نام مستعار با موفقیت تغییر یافت.', 'success');
-          }
-        } catch (e) {
-          this.showToast(e.message || 'خطا در ثبت نام مستعار', 'danger');
-        }
-      });
-    }
-  },
 
   async fetchInitialState() {
     try {

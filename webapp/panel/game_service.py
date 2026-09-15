@@ -235,17 +235,31 @@ def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
     season = check_and_settle_season()
     now_ms = int(time.time() * 1000)
 
-    nickname = None
-    if tg_user:
-        first = tg_user.get("first_name", "")
-        last = tg_user.get("last_name", "")
-        full = f"{first} {last}".strip()
-        nickname = full or tg_user.get("username")
-
     user_row = bot_db.get_user_by_telegram_id(telegram_id)
     user_id = user_row["id"] if user_row else None
 
-    profile = bot_db.create_or_get_game_profile(telegram_id, user_id=user_id, nickname=nickname)
+    # Determine canonical Telegram display name
+    tg_name = None
+    if tg_user:
+        first = (tg_user.get("first_name") or "").strip()
+        last = (tg_user.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        if full:
+            tg_name = full
+        elif tg_user.get("username"):
+            tg_name = f"@{tg_user['username']}"
+    if not tg_name and user_row:
+        if user_row.get("full_name") and user_row["full_name"].strip():
+            tg_name = user_row["full_name"].strip()
+        elif user_row.get("username") and user_row["username"].strip():
+            tg_name = f"@{user_row['username']}"
+    if not tg_name:
+        tg_name = f"کاربر {telegram_id}"
+
+    profile = bot_db.create_or_get_game_profile(telegram_id, user_id=user_id, nickname=tg_name)
+    if profile.get("nickname") != tg_name:
+        bot_db.update_game_profile(telegram_id, nickname=tg_name)
+        profile["nickname"] = tg_name
 
     # Calculate catch-up
     catchup = calculate_catchup(profile, now_ms)
