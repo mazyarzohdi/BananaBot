@@ -120,14 +120,21 @@ def dashboard(request: HttpRequest):
         annotate_user_subscriptions(subscriptions, db_user)
         products = bot_db.get_products(active_only=True)
 
+        game_prizes = {
+            "rank1": bot_db.get_setting("game_prize_rank1", "کانفیگ اختصاصی ۳ ماهه نامحدود VIP"),
+            "rank2": bot_db.get_setting("game_prize_rank2", "کانفیگ اختصاصی ۲ ماهه Pro"),
+            "rank3": bot_db.get_setting("game_prize_rank3", "کانفیگ اختصاصی ۱ ماهه Basic"),
+        }
+
         # Pre-hydrate game state for instant 0ms tap & upgrade availability
         initial_game_state_json = "{}"
         try:
             telegram_id = int(tg_user["id"])
             game_state = game_service.get_user_game_state(telegram_id, tg_user=tg_user)
             season = game_service.get_current_season()
+            prizes = game_service.get_prizes_list()
             initial_game_state_json = json.dumps(
-                {"success": True, **game_state, "season": season},
+                {"success": True, **game_state, "season": season, "prizes": prizes},
                 ensure_ascii=False,
             )
         except Exception as e:
@@ -140,6 +147,7 @@ def dashboard(request: HttpRequest):
             "products": products,
             "is_admin": False,
             "initial_game_state_json": initial_game_state_json,
+            "game_prizes": game_prizes,
         })
 
 
@@ -563,6 +571,20 @@ def admin_settings(request: HttpRequest):
             messages.success(request, "مقدار کل درآمد به‌روزرسانی شد.")
             return redirect("panel:admin_settings")
 
+        if request.POST.get("action") == "set_game_prizes":
+            p1 = request.POST.get("game_prize_rank1", "").strip()
+            p2 = request.POST.get("game_prize_rank2", "").strip()
+            p3 = request.POST.get("game_prize_rank3", "").strip()
+            if p1:
+                bot_db.set_setting("game_prize_rank1", p1)
+            if p2:
+                bot_db.set_setting("game_prize_rank2", p2)
+            if p3:
+                bot_db.set_setting("game_prize_rank3", p3)
+            game_service.invalidate_prizes_cache()
+            messages.success(request, "جوایز هفتگی مسابقه بازی مورس با موفقیت به‌روزرسانی شد.")
+            return redirect("panel:admin_settings")
+
         for key in SETTINGS_META:
             if key in request.POST:
                 bot_db.set_setting(key, request.POST[key])
@@ -579,8 +601,17 @@ def admin_settings(request: HttpRequest):
         "port": current.get("auto_payment_port", "8100"),
         "host": request.get_host().split(":")[0],
     }
+    game_prizes = {
+        "rank1": current.get("game_prize_rank1", "کانفیگ اختصاصی ۳ ماهه نامحدود VIP"),
+        "rank2": current.get("game_prize_rank2", "کانفیگ اختصاصی ۲ ماهه Pro"),
+        "rank3": current.get("game_prize_rank3", "کانفیگ اختصاصی ۱ ماهه Basic"),
+    }
     return render(request, "admin/settings.html", {
-        "fields": fields, "is_admin": True, "revenue": revenue, "auto_payment": auto_payment,
+        "fields": fields,
+        "is_admin": True,
+        "revenue": revenue,
+        "auto_payment": auto_payment,
+        "game_prizes": game_prizes,
     })
 
 

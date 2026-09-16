@@ -549,6 +549,14 @@ def get_prizes_list() -> list[dict]:
     return prizes
 
 
+def invalidate_prizes_cache():
+    """Invalidates the prizes cache and leaderboard cache so changes take effect immediately."""
+    _prizes_cache["prizes"] = None
+    _prizes_cache["expires_at"] = 0.0
+    _lb_cache["data"] = None
+    _lb_cache["expires_at"] = 0.0
+
+
 def get_leaderboard_data() -> dict:
     now_ts = time.time()
     season = get_current_season()

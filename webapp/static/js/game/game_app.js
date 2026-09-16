@@ -30,6 +30,9 @@ const GameApp = {
         window.LeaderboardModule.seasonData = pre.season;
         window.LeaderboardModule.renderSeasonCountdown(pre.season);
       }
+      if (pre.prizes && window.LeaderboardModule && window.LeaderboardModule.renderPrizes) {
+        window.LeaderboardModule.renderPrizes(pre.prizes);
+      }
     }
   },
 

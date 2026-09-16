@@ -55,6 +55,9 @@ const LeaderboardModule = {
         this.renderSeasonCountdown(data.season);
         this.renderLeaderboard(data.leaderboard);
         this.renderPastWinners(data.pastWinners);
+        if (data.prizes) {
+          this.renderPrizes(data.prizes);
+        }
       } else {
         throw new Error(data?.error || 'خطا در دریافت جدول رده‌بندی');
       }
@@ -316,6 +319,16 @@ const LeaderboardModule = {
         </div>
       `;
     }).join('');
+  },
+
+  renderPrizes(prizes) {
+    if (!prizes || !Array.isArray(prizes)) return;
+    prizes.forEach(p => {
+      const el = document.getElementById(`activePrizeTitle${p.rank}`);
+      if (el && p.title) {
+        el.textContent = p.title;
+      }
+    });
   }
 };
 

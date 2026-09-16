@@ -507,17 +507,17 @@
         <div class="prize-card gold">
           <div class="prize-icon">🥇</div>
           <div class="prize-rank">رتبه اول (طلا)</div>
-          <div class="prize-title">اشتراک ۳ ماهه نامحدود VIP</div>
+          <div class="prize-title" id="activePrizeTitle1">{{ game_prizes.rank1|default:"کانفیگ اختصاصی ۳ ماهه نامحدود VIP" }}</div>
         </div>
         <div class="prize-card silver">
           <div class="prize-icon">🥈</div>
           <div class="prize-rank">رتبه دوم (نقره)</div>
-          <div class="prize-title">اشتراک ۲ ماهه Pro</div>
+          <div class="prize-title" id="activePrizeTitle2">{{ game_prizes.rank2|default:"کانفیگ اختصاصی ۲ ماهه Pro" }}</div>
         </div>
         <div class="prize-card bronze">
           <div class="prize-icon">🥉</div>
           <div class="prize-rank">رتبه سوم (برنز)</div>
-          <div class="prize-title">اشتراک ۱ ماهه Basic</div>
+          <div class="prize-title" id="activePrizeTitle3">{{ game_prizes.rank3|default:"کانفیگ اختصاصی ۱ ماهه Basic" }}</div>
         </div>
       </div>
     </div>
