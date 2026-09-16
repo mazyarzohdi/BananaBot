@@ -106,6 +106,13 @@ const GameApp = {
   },
 
   updateUserData(userData) {
+    // Reconcile with any unsynced client-side taps to prevent energy snap-back
+    if (window.GameEngine) {
+      const unsynced = (window.GameEngine.pendingTaps || 0) + (window.GameEngine.inFlightTaps || 0);
+      if (unsynced > 0 && userData.energy != null) {
+        userData.energy = Math.max(0, userData.energy - unsynced);
+      }
+    }
     this.user = userData;
     this.renderCoreStats();
 

@@ -3,6 +3,7 @@
  */
 const GameEngine = {
   pendingTaps: 0,
+  inFlightTaps: 0,
   syncTimer: null,
   energyRecoveryTimer: null,
 
@@ -257,15 +258,20 @@ const GameEngine = {
 
     const tapsToSend = this.pendingTaps;
     this.pendingTaps = 0;
+    this.inFlightTaps += tapsToSend;
 
     try {
       const response = await window.GameAPI.syncTaps(tapsToSend, this.isTurboActive);
+      this.inFlightTaps = Math.max(0, this.inFlightTaps - tapsToSend);
+
       if (response && response.success && response.user) {
+        // updateUserData handles reconciliation with pending+inFlight taps
         if (window.GameApp) {
           window.GameApp.updateUserData(response.user);
         }
       }
     } catch (err) {
+      this.inFlightTaps = Math.max(0, this.inFlightTaps - tapsToSend);
       console.warn('Sync delayed, will retry:', err);
       this.pendingTaps += tapsToSend;
     }
