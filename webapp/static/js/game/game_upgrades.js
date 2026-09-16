@@ -27,7 +27,7 @@ const UpgradesModule = {
 
     const user = window.GameApp ? window.GameApp.user : null;
     if (!user || !user.upgrades) {
-      container.innerHTML = `<div class="loading-spinner">در حال بارگذاری ارتقاها...</div>`;
+      this.renderSkeleton(container);
       return;
     }
 
@@ -37,7 +37,12 @@ const UpgradesModule = {
     });
 
     if (filtered.length === 0) {
-      container.innerHTML = `<div class="loading-spinner">موردی در این دسته‌بندی یافت نشد.</div>`;
+      container.innerHTML = `
+        <div class="empty-card" style="text-align: center; padding: 30px 15px;">
+          <i class="fa fa-layer-group fa-2x" style="color: var(--text-muted); margin-bottom: 10px;"></i>
+          <p style="color: var(--text-secondary); font-size: 13.5px;">موردی در این دسته‌بندی یافت نشد.</p>
+        </div>
+      `;
       return;
     }
 
@@ -55,7 +60,7 @@ const UpgradesModule = {
       }
 
       return `
-        <div class="service-row" style="padding: 14px 10px; margin-bottom: 6px;">
+        <div class="service-row upgrade-card-${item.id}" style="padding: 14px 10px; margin-bottom: 6px; transition: all 0.3s ease;">
           <div class="service-icon" style="font-size: 22px; width: 44px; height: 44px; background: rgba(99, 102, 241, 0.12); color: #818cf8; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
             ${item.icon}
           </div>
@@ -71,9 +76,9 @@ const UpgradesModule = {
           <div style="flex-shrink: 0;">
             <button class="btn ${canAfford ? 'btn-primary' : 'btn-outline'} btn-sm buy-btn" 
                     data-upgrade-id="${item.id}"
-                    style="min-width: 90px; padding: 8px 12px; font-size: 12px; font-weight: 700;"
+                    style="min-width: 96px; padding: 8px 12px; font-size: 12px; font-weight: 700;"
                     ${!canAfford ? 'disabled' : ''}>
-              ${isMax ? 'تکمیل' : `${item.nextCost.toLocaleString()} امتیاز`}
+              <span class="btn-text">${isMax ? 'تکمیل' : `${item.nextCost.toLocaleString()} امتیاز`}</span>
             </button>
           </div>
         </div>
@@ -83,13 +88,32 @@ const UpgradesModule = {
     container.querySelectorAll('.buy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const upgradeId = btn.getAttribute('data-upgrade-id');
-        this.handleBuy(upgradeId);
+        this.handleBuy(upgradeId, btn);
       });
     });
   },
 
-  async handleBuy(upgradeId) {
+  renderSkeleton(container) {
+    if (!container) return;
+    container.innerHTML = Array(4).fill(0).map(() => `
+      <div class="skeleton-card-row">
+        <div class="skeleton-shimmer skeleton-icon"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-shimmer skeleton-text title"></div>
+          <div class="skeleton-shimmer skeleton-text sub"></div>
+        </div>
+        <div class="skeleton-shimmer skeleton-btn"></div>
+      </div>
+    `).join('');
+  },
+
+  async handleBuy(upgradeId, btnElement) {
     if (!window.GameApp || !window.GameApp.user) return;
+
+    if (btnElement) {
+      btnElement.classList.add('btn-loading');
+      btnElement.disabled = true;
+    }
 
     try {
       const response = await window.GameAPI.buyUpgrade(upgradeId);
@@ -100,11 +124,24 @@ const UpgradesModule = {
         }
         window.GameApp.updateUserData(response.user);
         window.GameApp.showToast('ارتقا با موفقیت انجام شد! 🎉', 'success');
+
+        const card = document.querySelector(`.upgrade-card-${upgradeId}`);
+        if (card) {
+          card.classList.add('upgrade-success-flash');
+          setTimeout(() => card.classList.remove('upgrade-success-flash'), 600);
+        }
+      } else {
+        throw new Error(response?.error || 'خطا در ارتقا');
       }
     } catch (err) {
       if (window.soundEngine) window.soundEngine.playError();
       if (window.GameApp) {
         window.GameApp.showToast(err.message || 'خطا در ارتقا', 'danger');
+      }
+    } finally {
+      if (btnElement && document.body.contains(btnElement)) {
+        btnElement.classList.remove('btn-loading');
+        btnElement.disabled = false;
       }
     }
   }

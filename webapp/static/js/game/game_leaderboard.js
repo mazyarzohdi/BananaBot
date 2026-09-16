@@ -37,6 +37,17 @@ const LeaderboardModule = {
   },
 
   async fetchData() {
+    const lbContainer = document.getElementById('leaderboardList');
+    const winnersContainer = document.getElementById('pastWinnersList');
+
+    // Show shimmer skeleton if empty or currently loading
+    if (lbContainer && (!lbContainer.children.length || lbContainer.querySelector('.loading-spinner'))) {
+      this.renderLeaderboardSkeleton(lbContainer);
+    }
+    if (winnersContainer && (!winnersContainer.children.length || winnersContainer.querySelector('.loading-spinner'))) {
+      this.renderPastWinnersSkeleton(winnersContainer);
+    }
+
     try {
       const data = await window.GameAPI.getLeaderboard();
       if (data && data.success) {
@@ -49,15 +60,44 @@ const LeaderboardModule = {
       }
     } catch (err) {
       console.error('Failed to load leaderboard:', err);
-      const container = document.getElementById('leaderboardList');
-      if (container && (!container.children.length || container.querySelector('.loading-spinner'))) {
-        container.innerHTML = `
+      if (lbContainer && (!lbContainer.children.length || lbContainer.querySelector('.skeleton-card-row'))) {
+        lbContainer.innerHTML = `
           <div class="empty-card" style="text-align: center; padding: 25px 15px;">
             <p style="color: var(--text-secondary); font-size: 13px;">هنوز اطلاعاتی برای این هفته ثبت نشده یا در حال بارگذاری مجدد است...</p>
           </div>
         `;
       }
     }
+  },
+
+  renderLeaderboardSkeleton(container) {
+    if (!container) return;
+    container.innerHTML = Array(5).fill(0).map((_, i) => `
+      <div class="skeleton-card-row">
+        <div class="skeleton-shimmer skeleton-box" style="width: 38px; height: 32px; border-radius: 6px;"></div>
+        <div class="skeleton-shimmer skeleton-circle" style="width: 36px; height: 36px;"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-shimmer skeleton-text title" style="width: ${35 + (i * 8)}%;"></div>
+          <div class="skeleton-shimmer skeleton-text sub" style="width: 50%;"></div>
+        </div>
+        <div class="skeleton-shimmer skeleton-box" style="width: 64px; height: 22px; border-radius: 4px;"></div>
+      </div>
+    `).join('');
+  },
+
+  renderPastWinnersSkeleton(container) {
+    if (!container) return;
+    container.innerHTML = Array(3).fill(0).map(() => `
+      <div class="skeleton-card-row" style="padding: 16px 12px;">
+        <div class="skeleton-shimmer skeleton-circle" style="width: 42px; height: 42px;"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-shimmer skeleton-text title" style="width: 40%;"></div>
+          <div class="skeleton-shimmer skeleton-text sub" style="width: 65%;"></div>
+          <div class="skeleton-shimmer skeleton-text sub" style="width: 50%; margin-top: 4px;"></div>
+        </div>
+        <div class="skeleton-shimmer skeleton-box" style="width: 70px; height: 24px; border-radius: 4px;"></div>
+      </div>
+    `).join('');
   },
 
   renderSeasonCountdown(season) {
