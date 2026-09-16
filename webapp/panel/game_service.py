@@ -193,9 +193,30 @@ def check_and_settle_season() -> dict:
     return current_season
 
 
+_season_cache = {"season": None, "expires_at": 0.0}
+_prizes_cache = {"prizes": None, "expires_at": 0.0}
+_lb_cache = {"data": None, "expires_at": 0.0}
+
+
 def get_current_season() -> dict:
+    now_ts = time.time()
+    now_ms = int(now_ts * 1000)
+
+    # Use in-memory cache if valid
+    cached = _season_cache["season"]
+    if cached and now_ts < _season_cache["expires_at"]:
+        if now_ms < cached["end_time"]:
+            return {
+                "id": cached["id"],
+                "season_number": cached["season_number"],
+                "start_time": cached["start_time"],
+                "end_time": cached["end_time"],
+                "time_left_ms": max(0, cached["end_time"] - now_ms),
+            }
+
     season = check_and_settle_season()
-    now_ms = int(time.time() * 1000)
+    _season_cache["season"] = season
+    _season_cache["expires_at"] = now_ts + 20.0
     time_left_ms = max(0, season["end_time"] - now_ms)
     return {
         "id": season["id"],
@@ -405,23 +426,54 @@ def purchase_upgrade(telegram_id: int, upgrade_id: str) -> dict:
     return get_user_game_state(telegram_id)
 
 
-def get_leaderboard_data() -> dict:
-    season = check_and_settle_season()
-    leaderboard = bot_db.get_game_leaderboard(50)
-    past_winners = bot_db.get_past_game_winners(15)
+def get_prizes_list() -> list[dict]:
+    now_ts = time.time()
+    if _prizes_cache["prizes"] and now_ts < _prizes_cache["expires_at"]:
+        return _prizes_cache["prizes"]
 
     prize_rank1 = bot_db.get_setting("game_prize_rank1", "کانفیگ اختصاصی ۳ ماهه نامحدود VIP")
     prize_rank2 = bot_db.get_setting("game_prize_rank2", "کانفیگ اختصاصی ۲ ماهه Pro")
     prize_rank3 = bot_db.get_setting("game_prize_rank3", "کانفیگ اختصاصی ۱ ماهه Basic")
 
-    return {
-        "success": True,
-        "season": get_current_season(),
+    prizes = [
+        {"rank": 1, "title": prize_rank1, "icon": "🥇", "tag": "طلایی"},
+        {"rank": 2, "title": prize_rank2, "icon": "🥈", "tag": "نقره‌ای"},
+        {"rank": 3, "title": prize_rank3, "icon": "🥉", "tag": "برنزی"},
+    ]
+    _prizes_cache["prizes"] = prizes
+    _prizes_cache["expires_at"] = now_ts + 60.0  # 60s cache
+    return prizes
+
+
+def get_leaderboard_data() -> dict:
+    now_ts = time.time()
+    season = get_current_season()
+
+    if _lb_cache["data"] and now_ts < _lb_cache["expires_at"]:
+        cached = _lb_cache["data"]
+        return {
+            "success": True,
+            "season": season,
+            "leaderboard": cached["leaderboard"],
+            "pastWinners": cached["pastWinners"],
+            "prizes": cached["prizes"],
+        }
+
+    leaderboard = bot_db.get_game_leaderboard(50)
+    past_winners = bot_db.get_past_game_winners(15)
+    prizes = get_prizes_list()
+
+    _lb_cache["data"] = {
         "leaderboard": leaderboard,
         "pastWinners": past_winners,
-        "prizes": [
-            {"rank": 1, "title": prize_rank1, "icon": "🥇", "tag": "طلایی"},
-            {"rank": 2, "title": prize_rank2, "icon": "🥈", "tag": "نقره‌ای"},
-            {"rank": 3, "title": prize_rank3, "icon": "🥉", "tag": "برنزی"},
-        ],
+        "prizes": prizes,
+    }
+    _lb_cache["expires_at"] = now_ts + 4.0  # 4s cache to avoid redundant db queries during high traffic
+
+    return {
+        "success": True,
+        "season": season,
+        "leaderboard": leaderboard,
+        "pastWinners": past_winners,
+        "prizes": prizes,
     }

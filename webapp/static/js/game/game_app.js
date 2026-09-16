@@ -9,13 +9,28 @@ const GameApp = {
     this.bindNavigation();
     this.bindSoundToggle();
 
+    // Instantly hydrate server-preloaded state (Zero Delay / 0ms clickability)
+    this.hydratePreloadedState();
+
     // Initialize submodules
     if (window.UpgradesModule) window.UpgradesModule.init();
     if (window.LeaderboardModule) window.LeaderboardModule.init();
     if (window.GameEngine) window.GameEngine.init();
 
-    // Fetch initial user state and season data
-    await this.fetchInitialState();
+    // Silently refresh in background without blocking user interactions
+    this.fetchInitialState();
+  },
+
+  hydratePreloadedState() {
+    const pre = window.INITIAL_GAME_STATE;
+    if (pre && pre.success && pre.user) {
+      this.user = pre.user;
+      this.renderCoreStats();
+      if (pre.season && window.LeaderboardModule) {
+        window.LeaderboardModule.seasonData = pre.season;
+        window.LeaderboardModule.renderSeasonCountdown(pre.season);
+      }
+    }
   },
 
   bindNavigation() {

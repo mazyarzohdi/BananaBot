@@ -521,8 +521,22 @@
 {% endblock %}
 
 {% block extra_js %}
+<script id="initialGameState" type="application/json">
+{{ initial_game_state_json|default:"{}"|safe }}
+</script>
 <script>
   window.GAME_API_BASE = "{% url 'panel:api_game_state' %}".replace(/\/state\/?$/, '');
+  try {
+    const rawEl = document.getElementById('initialGameState');
+    if (rawEl && rawEl.textContent) {
+      const parsed = JSON.parse(rawEl.textContent);
+      if (parsed && parsed.success && parsed.user) {
+        window.INITIAL_GAME_STATE = parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('Initial game state parse warning:', e);
+  }
 </script>
 <script src="{% static 'js/game/audio.js' %}"></script>
 <script src="{% static 'js/game/game_api.js' %}"></script>

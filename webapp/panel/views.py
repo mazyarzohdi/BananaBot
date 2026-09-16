@@ -26,6 +26,7 @@ from . import xui_client
 from . import reseller_core
 from .reseller_core import format_ts as _format_ts, annotate_config_usage as _annotate_config_usage
 from . import apikeys
+from . import game_service
 
 logger = logging.getLogger(__name__)
 
@@ -118,12 +119,27 @@ def dashboard(request: HttpRequest):
         subscriptions = bot_db.get_user_subscriptions(db_user["id"]) if db_user else []
         annotate_user_subscriptions(subscriptions, db_user)
         products = bot_db.get_products(active_only=True)
+
+        # Pre-hydrate game state for instant 0ms tap & upgrade availability
+        initial_game_state_json = "{}"
+        try:
+            telegram_id = int(tg_user["id"])
+            game_state = game_service.get_user_game_state(telegram_id, tg_user=tg_user)
+            season = game_service.get_current_season()
+            initial_game_state_json = json.dumps(
+                {"success": True, **game_state, "season": season},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.warning("Failed to preload game state for dashboard: %s", e)
+
         return render(request, "user/dashboard.html", {
             "tg_user": tg_user,
             "db_user": db_user,
             "subscriptions": subscriptions,
             "products": products,
             "is_admin": False,
+            "initial_game_state_json": initial_game_state_json,
         })
 
 

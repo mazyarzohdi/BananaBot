@@ -13,12 +13,40 @@ from django.conf import settings
 
 
 import os
+import threading
+
 try:
     import psycopg2
+    from psycopg2 import pool as pg_pool_module
     from psycopg2.extras import DictCursor
 except ImportError:
     psycopg2 = None
+    pg_pool_module = None
     DictCursor = None
+
+_pg_pool = None
+_pg_pool_lock = threading.Lock()
+
+
+def get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        with _pg_pool_lock:
+            if _pg_pool is None:
+                if psycopg2 is None or pg_pool_module is None:
+                    raise ImportError("psycopg2 is required for PostgreSQL support. Install psycopg2-binary.")
+                _pg_pool = pg_pool_module.ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=20,
+                    dbname=os.environ.get("DB_NAME", "bananabot"),
+                    user=os.environ.get("DB_USER", "bananabot"),
+                    password=os.environ.get("DB_PASS", ""),
+                    host=os.environ.get("DB_HOST", "127.0.0.1"),
+                    port=os.environ.get("DB_PORT", "5432"),
+                    connect_timeout=5,
+                )
+    return _pg_pool
+
 
 @contextmanager
 def get_conn():
@@ -27,18 +55,20 @@ def get_conn():
     if db_type == "postgres":
         if psycopg2 is None:
             raise ImportError("psycopg2 is required for PostgreSQL support. Install psycopg2-binary.")
-        conn = psycopg2.connect(
-            dbname=os.environ.get("DB_NAME", "bananabot"),
-            user=os.environ.get("DB_USER", "bananabot"),
-            password=os.environ.get("DB_PASS", ""),
-            host=os.environ.get("DB_HOST", "127.0.0.1"),
-            port=os.environ.get("DB_PORT", "5432"),
-            connect_timeout=5
-        )
+        
+        pool = get_pg_pool()
+        conn = pool.getconn()
+        try:
+            if conn.closed:
+                conn = pool.getconn()
+        except Exception:
+            pass
+
         # We need a wrapper to translate `?` to `%s` for execute calls
         class CursorWrapper:
             def __init__(self, c):
                 self._cursor = c
+
             def execute(self, query, params=()):
                 # Translate ? to %s
                 parts = query.split('?')
@@ -50,21 +80,28 @@ def get_conn():
                 query = query.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
                 query = query.replace("date('now')", "CURRENT_DATE")
                 # Translate SQLite date(column) to Postgres (column)::DATE
-                import re as _re
                 query = _re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', query)
                 query = query.replace("BEGIN EXCLUSIVE", "BEGIN")
                 if "ON CONFLICT(key) DO UPDATE" in query:
                     query = query.replace("ON CONFLICT(key) DO UPDATE SET", "ON CONFLICT(key) DO UPDATE SET")
-                self._cursor.execute(query, params)
+
+                if params:
+                    self._cursor.execute(query, params)
+                else:
+                    self._cursor.execute(query)
                 return self
+
             @property
             def rowcount(self):
                 return self._cursor.rowcount
+
             def fetchone(self):
                 row = self._cursor.fetchone()
                 return row if row is not None else None
+
             def fetchall(self):
                 return self._cursor.fetchall()
+
             @property
             def lastrowid(self):
                 try:
@@ -75,17 +112,21 @@ def get_conn():
         class ConnWrapper:
             def __init__(self, connection):
                 self._conn = connection
+
             def execute(self, query, params=()):
                 cur = self._conn.cursor(cursor_factory=DictCursor)
                 if query.strip().upper().startswith("INSERT") and "RETURNING id" not in query and "ON CONFLICT" not in query.upper():
                     query += " RETURNING id"
                 return CursorWrapper(cur).execute(query, params)
+
             def commit(self):
                 self._conn.commit()
+
             def rollback(self):
                 self._conn.rollback()
+
             def close(self):
-                self._conn.close()
+                pass
                 
         wrapper = ConnWrapper(conn)
         try:
@@ -95,7 +136,12 @@ def get_conn():
             wrapper.rollback()
             raise
         finally:
-            wrapper.close()
+            if conn and not conn.closed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                pool.putconn(conn)
             
     else:
         conn = sqlite3.connect(settings.BOT_DB_PATH, timeout=30.0)

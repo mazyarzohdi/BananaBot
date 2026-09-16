@@ -6,6 +6,7 @@ const UpgradesModule = {
 
   init() {
     this.bindFilterEvents();
+    this.renderUpgrades();
   },
 
   bindFilterEvents() {
