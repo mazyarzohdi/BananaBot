@@ -64,7 +64,6 @@ def api_game_upgrade(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 
 
-@login_required
 @require_http_methods(["GET"])
 def api_game_leaderboard(request: HttpRequest) -> JsonResponse:
     try:

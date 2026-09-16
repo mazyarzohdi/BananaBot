@@ -17,11 +17,17 @@ function getCookie(name) {
 }
 
 const GameAPI = {
-  // Compute base path from current window location or default to /panel/api/game
+  // Compute base path from template config or current window location
   getBaseUrl() {
+    if (window.GAME_API_BASE) {
+      return window.GAME_API_BASE;
+    }
     const path = window.location.pathname;
-    const prefix = path.startsWith('/panel') ? '/panel/api/game' : '/api/game';
-    return prefix;
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length > 0 && segments[0] !== 'api') {
+      return `/${segments[0]}/api/game`;
+    }
+    return '/api/game';
   },
 
   async request(endpoint, options = {}) {

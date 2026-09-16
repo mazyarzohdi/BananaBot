@@ -17,7 +17,7 @@ import urllib.parse
 from functools import wraps
 from django.conf import settings
 from django.shortcuts import redirect
-from django.http import HttpRequest
+from django.http import HttpRequest, JsonResponse
 
 
 def verify_telegram_auth(data: dict) -> bool:
@@ -92,6 +92,8 @@ def login_required(view_func):
     @wraps(view_func)
     def wrapper(request: HttpRequest, *args, **kwargs):
         if not request.session.get("tg_user"):
+            if "/api/" in request.path or request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse({"success": False, "error": "unauthorized", "login_required": True}, status=401)
             return redirect("panel:login")
         return view_func(request, *args, **kwargs)
     return wrapper

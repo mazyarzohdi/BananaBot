@@ -521,6 +521,9 @@
 {% endblock %}
 
 {% block extra_js %}
+<script>
+  window.GAME_API_BASE = "{% url 'panel:api_game_state' %}".replace(/\/state\/?$/, '');
+</script>
 <script src="{% static 'js/game/audio.js' %}"></script>
 <script src="{% static 'js/game/game_api.js' %}"></script>
 <script src="{% static 'js/game/game_engine.js' %}"></script>
