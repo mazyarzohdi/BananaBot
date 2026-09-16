@@ -8,10 +8,15 @@ import math
 import random
 import string
 import time
+import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from django.conf import settings
 from . import db as bot_db
+from . import telegram_api
 
+logger = logging.getLogger(__name__)
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
 UPGRADES_CATALOG = {
@@ -135,11 +140,76 @@ def get_next_friday_night(from_timestamp_ms: int | None = None) -> int:
     return int(target.timestamp() * 1000)
 
 
+def notify_admins_season_winners(season_number: int, winners: list[dict], next_season_start_ms: int):
+    """Notifies all Telegram admins of the weekly season conclusion and top 3 winners."""
+    admin_ids = list(getattr(settings, "ADMIN_TELEGRAM_IDS", []))
+    if not admin_ids:
+        raw_admin = os.environ.get("ADMIN_IDS", "[]")
+        try:
+            admin_ids = [int(x.strip()) for x in raw_admin.strip("[]").split(",") if x.strip().isdigit()]
+        except Exception:
+            admin_ids = []
+
+    if not admin_ids:
+        logger.warning("No ADMIN_TELEGRAM_IDS found to notify season winners.")
+        return
+
+    # Convert next start time to Tehran human-readable format
+    next_start_dt = datetime.fromtimestamp(next_season_start_ms / 1000.0, tz=TEHRAN_TZ)
+    next_start_str = next_start_dt.strftime("%Y-%m-%d ساعت %H:%M:%S")
+
+    rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank_titles = {1: "رتبه اول (طلا)", 2: "رتبه دوم (نقره)", 3: "رتبه سوم (برنز)"}
+
+    winners_lines = []
+    if not winners:
+        winners_lines.append("<i>هیچ بازیکنی در این فصل امتیازی کسب نکرده است.</i>\n")
+    else:
+        for w in winners:
+            r = w.get("rank", 1)
+            emoji = rank_emojis.get(r, "🎖")
+            title = rank_titles.get(r, f"رتبه {r}")
+            name = w.get("nickname") or f"کاربر {w.get('telegram_id')}"
+            uname = f"@{w['username']}" if w.get("username") else "ندارد"
+            score = int(w.get("score", 0))
+            prize = w.get("prize_title", "اشتراک")
+            code = w.get("prize_code", "-")
+
+            block = (
+                f"{emoji} <b>{title}:</b>\n"
+                f"👤 نام: <b>{name}</b>\n"
+                f"🆔 چت آیدی: <code>{w.get('telegram_id')}</code>\n"
+                f"🌐 نام کاربری: {uname}\n"
+                f"⭐️ امتیاز نهایی: <b>{score:,}</b>\n"
+                f"🎁 جایزه: <b>{prize}</b>\n"
+                f"🎫 کد تحویل جایزه: <code>{code}</code>\n"
+            )
+            winners_lines.append(block)
+
+    winners_text = "\n".join(winners_lines)
+
+    msg = (
+        f"🏆 <b>پایان مسابقه هفتگی — فصل {season_number} بازی کلیکر مورس</b>\n\n"
+        f"لیست ۳ نفر برتر مسابقه و مشخصات اهدای جوایز به شرح زیر است:\n\n"
+        f"{winners_text}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ <b>آغاز مسابقه فصل جدید ({season_number + 1}):</b>\n"
+        f"مسابقه بعدی دقیقاً <b>۲۴ ساعت بعد</b> ({next_start_str}) آغاز خواهد شد.\n"
+        f"در طول این ۲۴ ساعت، ویترین برندگان این دوره در صفحه بازی به نمایش درآمده است."
+    )
+
+    for admin_id in admin_ids:
+        try:
+            telegram_api.send_message(admin_id, msg, parse_mode="HTML")
+            logger.info("Sent season %s winners alert to admin %s", season_number, admin_id)
+        except Exception as e:
+            logger.error("Failed to send season winners alert to admin %s: %s", admin_id, e)
+
+
 def check_and_settle_season() -> dict:
     """Checks if the current active weekly season has expired. If so, settles
-
-    winners for Friday night, records prizes, resets scores, and starts a new
-    season.
+    winners for Friday night, records prizes, notifies admins via Telegram,
+    resets scores, and starts the 24-hour intermission before the next season.
     """
     now_ms = int(time.time() * 1000)
     current_season = bot_db.get_active_season()
@@ -165,6 +235,7 @@ def check_and_settle_season() -> dict:
             {"rank": 3, "title": prize_rank3, "prefix": "MORS-BRONZE"},
         ]
 
+        recorded_winners = []
         for i, player in enumerate(top_players):
             cfg = prize_configs[i]
             rand_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
@@ -178,6 +249,15 @@ def check_and_settle_season() -> dict:
                 prize_title=cfg["title"],
                 prize_code=voucher,
             )
+            recorded_winners.append({
+                "telegram_id": player["telegram_id"],
+                "username": player.get("username"),
+                "nickname": player.get("nickname") or f"Player_{player['telegram_id']}",
+                "rank": cfg["rank"],
+                "score": player["total_score"],
+                "prize_title": cfg["title"],
+                "prize_code": voucher,
+            })
 
         # 2. Close current season
         bot_db.close_game_season(current_season["id"])
@@ -185,9 +265,22 @@ def check_and_settle_season() -> dict:
         # 3. Reset all players' total_score for the new week (keeps balance & upgrades intact)
         bot_db.reset_season_scores()
 
-        # 4. Start next season
-        next_end = get_next_friday_night(now_ms + 1000)
-        new_season = bot_db.create_game_season(season_num + 1, now_ms, next_end)
+        # 4. Next season start is exactly 24 hours after Friday night (Saturday night 23:59:59)
+        friday_end_ms = current_season["end_time"]
+        intermission_duration_ms = 24 * 60 * 60 * 1000  # 24 hours
+        next_season_start = friday_end_ms + intermission_duration_ms
+        next_season_end = get_next_friday_night(next_season_start + 1000)
+
+        # 5. Notify all Telegram admins with top 3 winner details
+        try:
+            notify_admins_season_winners(season_num, recorded_winners, next_season_start)
+        except Exception as exc:
+            logger.error("Error sending admin notifications: %s", exc)
+
+        # 6. Create next season record
+        new_season = bot_db.create_game_season(season_num + 1, next_season_start, next_season_end)
+        _season_cache["season"] = None
+        _lb_cache["data"] = None
         return new_season
 
     return current_season
@@ -202,32 +295,36 @@ def get_current_season() -> dict:
     now_ts = time.time()
     now_ms = int(now_ts * 1000)
 
-    # Use in-memory cache if valid
-    cached = _season_cache["season"]
-    if cached and now_ts < _season_cache["expires_at"]:
-        if now_ms < cached["end_time"]:
-            return {
-                "id": cached["id"],
-                "season_number": cached["season_number"],
-                "start_time": cached["start_time"],
-                "end_time": cached["end_time"],
-                "time_left_ms": max(0, cached["end_time"] - now_ms),
-            }
+    season = _season_cache.get("season")
+    if not season or now_ts >= _season_cache.get("expires_at", 0) or now_ms >= season.get("end_time", 0):
+        season = check_and_settle_season()
+        _season_cache["season"] = season
+        _season_cache["expires_at"] = now_ts + 10.0
 
-    season = check_and_settle_season()
-    _season_cache["season"] = season
-    _season_cache["expires_at"] = now_ts + 20.0
-    time_left_ms = max(0, season["end_time"] - now_ms)
+    is_intermission = (now_ms < season["start_time"])
+    if is_intermission:
+        # During 24h intermission: countdown is to Saturday night 23:59:59
+        time_left_ms = max(0, season["start_time"] - now_ms)
+        prev_num = season["season_number"] - 1
+        intermission_winners = bot_db.get_season_winners(prev_num)
+    else:
+        # Active competition: countdown is to Friday night 23:59:59
+        time_left_ms = max(0, season["end_time"] - now_ms)
+        intermission_winners = []
+
     return {
         "id": season["id"],
         "season_number": season["season_number"],
         "start_time": season["start_time"],
         "end_time": season["end_time"],
         "time_left_ms": time_left_ms,
+        "is_intermission": is_intermission,
+        "intermission_winners": intermission_winners,
+        "previous_season_number": season["season_number"] - 1 if is_intermission else None,
     }
 
 
-def calculate_catchup(user: dict, now_ms: int | None = None) -> dict:
+def calculate_catchup(user: dict, now_ms: int | None = None, is_intermission: bool = False) -> dict:
     if now_ms is None:
         now_ms = int(time.time() * 1000)
 
@@ -241,7 +338,10 @@ def calculate_catchup(user: dict, now_ms: int | None = None) -> dict:
     # Passive server income
     passive_mined = int(elapsed_sec * user.get("passive_rate", 0))
     new_balance = user.get("balance", 0) + passive_mined
-    new_total_score = user.get("total_score", 0) + passive_mined
+    if is_intermission:
+        new_total_score = 0
+    else:
+        new_total_score = user.get("total_score", 0) + passive_mined
 
     return {
         "elapsed_sec": elapsed_sec,
@@ -253,7 +353,8 @@ def calculate_catchup(user: dict, now_ms: int | None = None) -> dict:
 
 
 def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
-    season = check_and_settle_season()
+    season = get_current_season()
+    is_intermission = season.get("is_intermission", False)
     now_ms = int(time.time() * 1000)
 
     user_row = bot_db.get_user_by_telegram_id(telegram_id)
@@ -279,7 +380,7 @@ def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
         profile["nickname"] = tg_name
 
     # Calculate catch-up
-    catchup = calculate_catchup(profile, now_ms)
+    catchup = calculate_catchup(profile, now_ms, is_intermission=is_intermission)
     if catchup["elapsed_sec"] > 1:
         bot_db.update_game_profile(
             telegram_id,
@@ -318,17 +419,20 @@ def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
             "upgrades": catalog_list,
             "upgradesMap": upgrades_map,
         },
-        "season": get_current_season(),
+        "season": season,
     }
 
 
 def process_tap_batch(telegram_id: int, tap_count: int, combo_boost: bool = False) -> dict:
+    season = get_current_season()
+    is_intermission = season.get("is_intermission", False)
+
     profile = bot_db.get_game_profile(telegram_id)
     if not profile:
         profile = bot_db.create_or_get_game_profile(telegram_id)
 
     now_ms = int(time.time() * 1000)
-    catchup = calculate_catchup(profile, now_ms)
+    catchup = calculate_catchup(profile, now_ms, is_intermission=is_intermission)
 
     safe_taps = max(0, int(tap_count or 0))
 
@@ -343,7 +447,10 @@ def process_tap_batch(telegram_id: int, tap_count: int, combo_boost: bool = Fals
 
     final_energy = max(0, catchup["new_energy"] - actual_taps)
     final_balance = catchup["new_balance"] + tap_score
-    final_total_score = catchup["new_total_score"] + tap_score
+    if is_intermission:
+        final_total_score = 0
+    else:
+        final_total_score = catchup["new_total_score"] + tap_score
 
     bot_db.update_game_profile(
         telegram_id,
@@ -365,9 +472,10 @@ def purchase_upgrade(telegram_id: int, upgrade_id: str) -> dict:
     if not profile:
         profile = bot_db.create_or_get_game_profile(telegram_id)
 
-    # Apply any pending offline passive income and energy recovery before purchase
+    season = get_current_season()
+    is_intermission = season.get("is_intermission", False)
     now_ms = int(time.time() * 1000)
-    catchup = calculate_catchup(profile, now_ms)
+    catchup = calculate_catchup(profile, now_ms, is_intermission=is_intermission)
     if catchup["elapsed_sec"] > 1:
         bot_db.update_game_profile(
             telegram_id,

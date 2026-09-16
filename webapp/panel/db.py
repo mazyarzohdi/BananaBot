@@ -1138,7 +1138,7 @@ def close_game_season(season_id: int):
 def get_top_season_players(limit: int = 3) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT gp.telegram_id, "
+            "SELECT gp.telegram_id, u.username, "
             "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN substr(gp.nickname, 1, 1) != '@' THEN NULLIF(TRIM(gp.nickname), '') ELSE NULL END, 'کاربر ' || gp.telegram_id) AS nickname, "
             "gp.total_score "
             "FROM game_profiles gp "
@@ -1147,6 +1147,21 @@ def get_top_season_players(limit: int = 3) -> list[dict]:
             "ORDER BY gp.total_score DESC "
             "LIMIT ?",
             (limit,)
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def get_season_winners(season_number: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT gw.season_number, gw.telegram_id, u.username, "
+            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN substr(gw.nickname, 1, 1) != '@' THEN NULLIF(TRIM(gw.nickname), '') ELSE NULL END, 'کاربر ' || gw.telegram_id) AS nickname, "
+            "gw.rank, gw.score, gw.prize_title, gw.prize_code, gw.created_at "
+            "FROM game_winners gw "
+            "LEFT JOIN users u ON gw.telegram_id = u.telegram_id "
+            "WHERE gw.season_number = ? "
+            "ORDER BY gw.rank ASC",
+            (season_number,)
         ).fetchall()
     return rows_to_list(rows)
 

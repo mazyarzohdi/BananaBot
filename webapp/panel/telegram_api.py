@@ -43,10 +43,14 @@ def _call(method: str, payload: dict, timeout: float = 10) -> dict | None:
         return None
 
 
-def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> dict | None:
+def send_message(
+    chat_id: int, text: str, reply_markup: dict | None = None, parse_mode: str | None = None
+) -> dict | None:
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     return _call("sendMessage", payload)
 
 

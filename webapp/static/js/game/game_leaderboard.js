@@ -103,16 +103,84 @@ const LeaderboardModule = {
   renderSeasonCountdown(season) {
     if (!season) return;
 
+    const isIntermission = !!season.is_intermission;
+
     const seasonBadge = document.getElementById('seasonNumberBadge');
     if (seasonBadge) {
-      seasonBadge.textContent = `مسابقه هفته ${season.season_number}`;
+      if (isIntermission) {
+        seasonBadge.textContent = 'دوره وقفه ۲۴ ساعته مسابقه';
+        seasonBadge.className = 'badge badge-cyan';
+      } else {
+        seasonBadge.textContent = `مسابقه هفته ${season.season_number}`;
+        seasonBadge.className = 'badge badge-amber';
+      }
+    }
+
+    const countdownLabel = document.getElementById('seasonCountdownLabel');
+    if (countdownLabel) {
+      if (isIntermission) {
+        countdownLabel.innerHTML = `<i class="fa fa-hourglass-start" style="color: #38bdf8;"></i> آغاز مسابقه فصل ${season.season_number}: <strong>شنبه شب ساعت ۲۳:۵۹:۵۹</strong>`;
+      } else {
+        countdownLabel.innerHTML = '<i class="fa fa-clock" style="color: #fbbf24;"></i> پایان مسابقه: <strong>جمعه شب ساعت ۲۳:۵۹:۵۹</strong>';
+      }
+    }
+
+    const intermissionSubBadge = document.getElementById('intermissionSubBadge');
+    if (intermissionSubBadge) {
+      intermissionSubBadge.style.display = isIntermission ? 'inline' : 'none';
+    }
+
+    // Intermission Winners Showcase
+    const intermissionSection = document.getElementById('intermissionWinnersSection');
+    const intermissionGrid = document.getElementById('intermissionWinnersGrid');
+    const intermissionHeading = document.getElementById('intermissionWinnersHeading');
+
+    if (intermissionSection) {
+      if (isIntermission) {
+        intermissionSection.style.display = 'block';
+        if (intermissionHeading && season.previous_season_number) {
+          intermissionHeading.textContent = `برندگان برتر مسابقه هفته ${season.previous_season_number} (فصل گذشته)`;
+        }
+        if (intermissionGrid) {
+          const winners = season.intermission_winners || [];
+          if (winners.length === 0) {
+            intermissionGrid.innerHTML = `
+              <div style="grid-column: 1 / -1; text-align: center; padding: 18px 10px; color: var(--text-secondary); font-size: 13px;">
+                هنوز دوره‌ای به پایان نرسیده یا در فصل گذشته امتیازی ثبت نشده است.
+              </div>
+            `;
+          } else {
+            intermissionGrid.innerHTML = winners.map(w => {
+              const medal = w.rank === 1 ? '🥇' : (w.rank === 2 ? '🥈' : '🥉');
+              const cls = w.rank === 1 ? 'gold' : (w.rank === 2 ? 'silver' : 'bronze');
+              const rankTitle = w.rank === 1 ? 'رتبه اول (طلا)' : (w.rank === 2 ? 'رتبه دوم (نقره)' : 'رتبه سوم (برنز)');
+              return `
+                <div class="winner-card ${cls}">
+                  <div style="font-size: 32px; margin-bottom: 4px;">${medal}</div>
+                  <div class="winner-rank-badge">${rankTitle}</div>
+                  <div class="winner-user-name">
+                    <i class="fab fa-telegram" style="color: #38bdf8; font-size: 12px;"></i>
+                    <span>${w.nickname}</span>
+                  </div>
+                  <div class="winner-user-score">${Math.floor(w.score).toLocaleString()} امتیاز</div>
+                  <div class="winner-user-prize">${w.prize_title}</div>
+                </div>
+              `;
+            }).join('');
+          }
+        }
+      } else {
+        intermissionSection.style.display = 'none';
+      }
     }
 
     if (this.timerInterval) clearInterval(this.timerInterval);
 
+    const targetTimestamp = isIntermission ? (season.start_time || Date.now()) : (season.end_time || Date.now());
+
     const updateTimer = () => {
       const now = Date.now();
-      const diff = Math.max(0, season.end_time - now);
+      const diff = Math.max(0, targetTimestamp - now);
 
       const d = Math.floor(diff / (1000 * 60 * 60 * 24));
       const h = Math.floor((diff / (1000 * 60 * 60)) % 24);
@@ -128,12 +196,6 @@ const LeaderboardModule = {
       if (elH) elH.textContent = String(h).padStart(2, '0');
       if (elM) elM.textContent = String(m).padStart(2, '0');
       if (elS) elS.textContent = String(s).padStart(2, '0');
-
-      // Also update topbar banner countdown if present
-      const topbarTimer = document.getElementById('topbarFridayCountdown');
-      if (topbarTimer) {
-        topbarTimer.textContent = `${d} روز و ${h} ساعت تا پایان مسابقه جمعه شب`;
-      }
 
       if (diff <= 0) {
         clearInterval(this.timerInterval);
