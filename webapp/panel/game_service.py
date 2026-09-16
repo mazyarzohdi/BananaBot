@@ -259,7 +259,7 @@ def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
     user_row = bot_db.get_user_by_telegram_id(telegram_id)
     user_id = user_row["id"] if user_row else None
 
-    # Determine canonical Telegram display name
+    # Determine canonical Telegram display name (Full name only, never username)
     tg_name = None
     if tg_user:
         first = (tg_user.get("first_name") or "").strip()
@@ -267,13 +267,9 @@ def get_user_game_state(telegram_id: int, tg_user: dict | None = None) -> dict:
         full = f"{first} {last}".strip()
         if full:
             tg_name = full
-        elif tg_user.get("username"):
-            tg_name = f"@{tg_user['username']}"
     if not tg_name and user_row:
         if user_row.get("full_name") and user_row["full_name"].strip():
             tg_name = user_row["full_name"].strip()
-        elif user_row.get("username") and user_row["username"].strip():
-            tg_name = f"@{user_row['username']}"
     if not tg_name:
         tg_name = f"کاربر {telegram_id}"
 

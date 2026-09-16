@@ -1088,8 +1088,7 @@ def get_game_leaderboard(limit: int = 50) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT gp.telegram_id, "
-            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN u.username IS NOT NULL AND u.username != '' THEN '@' || u.username ELSE NULL END, NULLIF(TRIM(gp.nickname), ''), 'کاربر ' || gp.telegram_id) AS nickname, "
-            "u.username, "
+            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN gp.nickname NOT LIKE '@%' THEN NULLIF(TRIM(gp.nickname), '') ELSE NULL END, 'کاربر ' || gp.telegram_id) AS nickname, "
             "gp.total_score, gp.passive_rate, gp.tap_power "
             "FROM game_profiles gp "
             "LEFT JOIN users u ON gp.telegram_id = u.telegram_id "
@@ -1137,8 +1136,7 @@ def get_top_season_players(limit: int = 3) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT gp.telegram_id, "
-            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN u.username IS NOT NULL AND u.username != '' THEN '@' || u.username ELSE NULL END, NULLIF(TRIM(gp.nickname), ''), 'کاربر ' || gp.telegram_id) AS nickname, "
-            "u.username, "
+            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN gp.nickname NOT LIKE '@%' THEN NULLIF(TRIM(gp.nickname), '') ELSE NULL END, 'کاربر ' || gp.telegram_id) AS nickname, "
             "gp.total_score "
             "FROM game_profiles gp "
             "LEFT JOIN users u ON gp.telegram_id = u.telegram_id "
@@ -1168,8 +1166,7 @@ def get_past_game_winners(limit: int = 15) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT gw.season_number, gw.telegram_id, "
-            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN u.username IS NOT NULL AND u.username != '' THEN '@' || u.username ELSE NULL END, NULLIF(TRIM(gw.nickname), ''), 'کاربر ' || gw.telegram_id) AS nickname, "
-            "u.username, "
+            "COALESCE(NULLIF(TRIM(u.full_name), ''), CASE WHEN gw.nickname NOT LIKE '@%' THEN NULLIF(TRIM(gw.nickname), '') ELSE NULL END, 'کاربر ' || gw.telegram_id) AS nickname, "
             "gw.rank, gw.score, gw.prize_title, gw.prize_code, gw.created_at "
             "FROM game_winners gw "
             "LEFT JOIN users u ON gw.telegram_id = u.telegram_id "

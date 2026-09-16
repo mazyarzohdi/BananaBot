@@ -138,7 +138,6 @@ const LeaderboardModule = {
       }
 
       const isMe = item.telegram_id === currentTelegramId;
-      const usernameTag = item.username ? `<span style="font-size: 11.5px; color: var(--text-muted); font-weight: normal; direction: ltr;">(@${item.username})</span>` : '';
 
       return `
         <div class="service-row" style="padding: 12px 8px; ${isMe ? 'background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: var(--radius-sm); margin: 3px 0;' : ''}">
@@ -149,7 +148,6 @@ const LeaderboardModule = {
             <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
               <i class="fab fa-telegram" style="color: #38bdf8; font-size: 13px;"></i>
               <span class="service-name">${item.nickname}</span>
-              ${usernameTag}
               ${isMe ? '<span class="badge badge-green" style="font-size: 11px;">شما</span>' : ''}
             </div>
             <div class="service-meta" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
@@ -181,7 +179,6 @@ const LeaderboardModule = {
 
     container.innerHTML = winners.map(w => {
       const medal = w.rank === 1 ? '🥇' : w.rank === 2 ? '🥈' : '🥉';
-      const usernameTag = w.username ? `<span style="font-size: 11px; color: var(--text-muted); direction: ltr;">(@${w.username})</span>` : '';
       return `
         <div class="service-row" style="padding: 14px 8px;">
           <div style="font-size: 24px; width: 44px; text-align: center; flex-shrink: 0;">
@@ -191,7 +188,6 @@ const LeaderboardModule = {
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
               <i class="fab fa-telegram" style="color: #38bdf8; font-size: 13px;"></i>
               <span class="service-name">${w.nickname}</span>
-              ${usernameTag}
               <span class="badge badge-amber">هفته ${w.season_number}</span>
             </div>
             <div class="service-meta" style="color: #fbbf24; font-weight: 600; font-size: 12.5px; margin-top: 3px;">
