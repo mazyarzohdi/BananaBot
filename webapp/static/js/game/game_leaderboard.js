@@ -44,9 +44,19 @@ const LeaderboardModule = {
         this.renderSeasonCountdown(data.season);
         this.renderLeaderboard(data.leaderboard);
         this.renderPastWinners(data.pastWinners);
+      } else {
+        throw new Error(data?.error || 'خطا در دریافت جدول رده‌بندی');
       }
     } catch (err) {
       console.error('Failed to load leaderboard:', err);
+      const container = document.getElementById('leaderboardList');
+      if (container && (!container.children.length || container.querySelector('.loading-spinner'))) {
+        container.innerHTML = `
+          <div class="empty-card" style="text-align: center; padding: 25px 15px;">
+            <p style="color: var(--text-secondary); font-size: 13px;">هنوز اطلاعاتی برای این هفته ثبت نشده یا در حال بارگذاری مجدد است...</p>
+          </div>
+        `;
+      }
     }
   },
 
