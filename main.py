@@ -476,6 +476,16 @@ async def main():
         )
 
     logger.info("Bot starting...")
+    try:
+        # Seal any past approved payments from previous sessions so they don't get fulfilled repeatedly
+        await db._execute(
+            "UPDATE payments SET order_id = 0 "
+            "WHERE status = 'approved' AND (order_id IS NULL OR order_id = -1) "
+            "AND datetime(created_at) < datetime('now', '-10 minutes')"
+        )
+    except Exception as exc:
+        logger.debug("Payment startup sanitization: %s", exc)
+
     asyncio.create_task(_cardgozar_polling_loop(bot, db))
     asyncio.create_task(_expire_payments_loop(bot, db))
     asyncio.create_task(_expiry_reminder_loop(bot, db))
