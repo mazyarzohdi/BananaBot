@@ -108,14 +108,23 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                 msg += f"\n\n🎟 کوپن «{payment['coupon_code']}» اعمال شد."
 
             if payment.get("gateway_ref_id"):
-                msg += f"\n\n💳 کد رهگیری بانکی: <code>{payment['gateway_ref_id']}</code>"
+                msg += f"\n\n💳 کد رهگیری بانکی: `{payment['gateway_ref_id']}`"
 
-            await bot.send_message(
-                telegram_id,
-                msg,
-                parse_mode="Markdown",
-                reply_markup=service_actions_inline(result["id"], show_back=False),
-            )
+            try:
+                await bot.send_message(
+                    telegram_id,
+                    msg,
+                    parse_mode="Markdown",
+                    reply_markup=service_actions_inline(result["id"], show_back=False),
+                )
+            except Exception as send_err:
+                logger.warning("Markdown send failed in fulfillment (%s), falling back to clean text", send_err)
+                clean_msg = msg.replace("`", "").replace("<code>", "").replace("</code>", "")
+                await bot.send_message(
+                    telegram_id,
+                    clean_msg,
+                    reply_markup=service_actions_inline(result["id"], show_back=False),
+                )
             logger.info("Automatically delivered product #%s for user %s (payment #%s, order #%s)", product["id"], telegram_id, payment_id, order_id)
             return {"status": "fulfilled", "type": "product", "sub_id": result["id"], "order_id": order_id}
 
@@ -168,7 +177,12 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                     if payment.get("gateway_ref_id"):
                         renew_msg += f"\n💳 کد رهگیری بانکی: <code>{payment['gateway_ref_id']}</code>"
 
-                    await bot.send_message(telegram_id, renew_msg, parse_mode="HTML")
+                    await bot.send_message(
+                        telegram_id,
+                        renew_msg,
+                        parse_mode="HTML",
+                        reply_markup=service_actions_inline(sub["id"], show_back=False),
+                    )
                     logger.info("Automatically renewed subscription #%s for user %s (payment #%s, order #%s)", sub["id"], telegram_id, payment_id, order_id)
                     return {"status": "fulfilled", "type": "renew", "sub_id": sub["id"], "order_id": order_id}
                 except Exception as exc:
@@ -219,7 +233,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                 if payment.get("gateway_ref_id"):
                     reseller_msg += f"\n\n💳 کد رهگیری بانکی: <code>{payment['gateway_ref_id']}</code>"
 
-                await bot.send_message(telegram_id, reseller_msg, parse_mode="HTML")
+                await bot.send_message(telegram_id, reseller_msg, parse_mode="HTML", reply_markup=main_menu())
                 logger.info("Automatically activated reseller plan #%s for user %s (payment #%s, order #%s)", plan["id"], telegram_id, payment_id, order_id)
                 return {"status": "fulfilled", "type": "reseller", "plan_id": plan["id"], "order_id": order_id}
             except Exception as exc:

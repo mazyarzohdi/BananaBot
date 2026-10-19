@@ -444,6 +444,7 @@ async def main():
     # without requiring the admin to enter it manually anywhere.
     me = await bot.get_me()
     await db.set_setting("bot_username", me.username or "")
+    await db.set_setting("bot_token", settings.bot_token)
     logger.info(f"Bot username: @{me.username}")
 
     # The bot prefers CARD_NUMBER/CARD_HOLDER from .env over the DB setting

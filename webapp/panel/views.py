@@ -1291,6 +1291,67 @@ def _render_safe_fallback_html(tracking_code: str = "", bot_username: str = "", 
 </html>"""
 
 
+def _notify_cardgozar_approved(conn, payment: dict, ref_id: str):
+    """Sends immediate confirmation to the customer on Telegram with action buttons to continue/complete purchase."""
+    from . import telegram_api
+
+    user_row = conn.execute("SELECT telegram_id, balance FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
+    if not user_row or not user_row[0]:
+        return
+    telegram_id = int(user_row[0])
+    balance = user_row[1] if len(user_row) > 1 else payment["amount"]
+
+    text = (
+        f"✅ <b>پرداخت شما در درگاه کارت‌گذر با موفقیت تأیید شد!</b>\n\n"
+        f"💰 مبلغ پرداختی: <b>{payment['amount']:,} تومان</b>\n"
+        f"💵 موجودی جدید کیف پول: <b>{balance:,} تومان</b>\n"
+    )
+    if ref_id:
+        text += f"💳 کد پیگیری بانکی: <code>{ref_id}</code>\n"
+
+    reply_markup = None
+    if payment.get("renew_sub_id"):
+        text += (
+            f"\n🔁 تمدید سرویس: <b>#{payment['renew_sub_id']}</b>\n"
+            f"برای نهایی‌سازی و اعمال تمدید روی دکمه زیر کلیک کنید 👇"
+        )
+        reply_markup = {"inline_keyboard": [[
+            {"text": "🔁 تکمیل تمدید سرویس", "callback_data": f"svc_renew_ok:{payment['renew_sub_id']}"}
+        ]]}
+    elif payment.get("reseller_plan_id"):
+        plan_row = conn.execute("SELECT name FROM reseller_plans WHERE id = ?", (payment["reseller_plan_id"],)).fetchone()
+        plan_name = plan_row[0] if plan_row else "نمایندگی"
+        text += (
+            f"\n🤝 پلن نمایندگی: <b>{plan_name}</b>\n"
+            f"برای تکمیل فعال‌سازی روی دکمه زیر کلیک کنید 👇"
+        )
+        reply_markup = {"inline_keyboard": [[
+            {"text": "🤝 تکمیل خرید/تمدید نمایندگی", "callback_data": f"res_confirm:{payment['reseller_plan_id']}"}
+        ]]}
+    elif payment.get("product_id"):
+        prod_row = conn.execute("SELECT name FROM products WHERE id = ?", (payment["product_id"],)).fetchone()
+        prod_name = prod_row[0] if prod_row else "سرویس"
+        text += (
+            f"\n📦 محصول انتخابی: <b>{prod_name}</b>\n\n"
+            f"سفارش شما در حال پردازش و تحویل خودکار است.\n"
+            f"همچنین می‌توانید جهت ساخت و دریافت فوری کانفیگ روی دکمه زیر کلیک کنید 👇"
+        )
+        reply_markup = {"inline_keyboard": [[
+            {"text": "🛒 تکمیل خرید و تحویل سرویس", "callback_data": f"confirm_buy:{payment['product_id']}"}
+        ]]}
+    else:
+        text += "\nموجودی به کیف پول شما اضافه شد. جهت خرید سرویس از دکمه زیر استفاده کنید 👇"
+        reply_markup = {"inline_keyboard": [[
+            {"text": "🛍 خرید سرویس", "callback_data": "buy_service"}
+        ]]}
+
+    try:
+        telegram_api.send_message(telegram_id, text, reply_markup=reply_markup, parse_mode="HTML")
+        logger.info("Sent CardGozar approval telegram notification to %s for payment #%s", telegram_id, payment["id"])
+    except Exception as exc:
+        logger.warning("Failed to send CardGozar approval telegram message to %s: %s", telegram_id, exc)
+
+
 @csrf_exempt
 def cardgozar_callback(request: HttpRequest):
     """Handles CardGozar webhook (POST) and customer redirect (GET)."""
@@ -1363,19 +1424,7 @@ def cardgozar_callback(request: HttpRequest):
                         "UPDATE users SET balance = balance + ? WHERE id = ?",
                         (payment["amount"], payment["user_id"]),
                     )
-                    user_row = conn.execute("SELECT telegram_id FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
-                    if user_row and user_row[0]:
-                        msg = (
-                            f"✅ پرداخت شما در درگاه کارت‌گذر تایید شد.\n"
-                            f"💰 مبلغ: {payment['amount']:,} تومان\n"
-                        )
-                        if ref_id:
-                            msg += f"💳 کد پیگیری: {ref_id}\n"
-                        msg += "\nسفارش شما در حال پردازش خودکار است..."
-                        try:
-                            telegram_api.send_message(int(user_row[0]), msg)
-                        except Exception:
-                            pass
+                    _notify_cardgozar_approved(conn, payment, ref_id)
 
             return JsonResponse({"status": "success", "ref_id": ref_id})
 
@@ -1492,19 +1541,7 @@ def cardgozar_callback(request: HttpRequest):
                             (payment["amount"], payment["user_id"]),
                         )
                         logger.info("Approved payment #%s via CardGozar redirect", payment["id"])
-                        user_row = conn.execute("SELECT telegram_id FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
-                        if user_row and user_row[0]:
-                            msg = (
-                                f"✅ پرداخت شما در درگاه کارت‌گذر تایید شد.\n"
-                                f"💰 مبلغ: {payment['amount']:,} تومان\n"
-                            )
-                            if ref_id:
-                                msg += f"💳 کد پیگیری: {ref_id}\n"
-                            msg += "\nسفارش شما در حال پردازش خودکار است..."
-                            try:
-                                telegram_api.send_message(int(user_row[0]), msg)
-                            except Exception:
-                                pass
+                        _notify_cardgozar_approved(conn, payment, ref_id)
 
                 with bot_db.get_conn() as conn:
                     row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment["id"],)).fetchone()

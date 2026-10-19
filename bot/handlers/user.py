@@ -19,6 +19,7 @@ from bot.keyboards import (
     cancel_kb,
     cardgozar_invoice_inline,
     channel_required_inline,
+    complete_purchase_inline,
     confirm_buy_inline,
     faq_inline,
     insufficient_balance_inline,
@@ -28,7 +29,9 @@ from bot.keyboards import (
     payment_actions_inline,
     payment_method_choice_inline,
     products_by_panel_inline,
+    renew_complete_inline,
     renew_confirm_inline,
+    reseller_complete_inline,
     reseller_confirm_inline,
     reseller_insufficient_balance_inline,
     reseller_plans_inline,
@@ -1696,12 +1699,89 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
         await callback.answer("پرداخت پیدا نشد.", show_alert=True)
         return
 
+    ref_id = payment.get("gateway_ref_id") or ""
+
     if payment["status"] == "approved":
-        await callback.answer("✅ این پرداخت قبلاً با موفقیت تأیید شده است.", show_alert=True)
-        try:
-            await callback.message.edit_text("✅ پرداخت قبلاً با موفقیت تأیید و اعمال شده است.")
-        except Exception:
-            pass
+        order_id = payment.get("order_id")
+
+        # Case 1: Already fulfilled successfully with active subscription or order
+        if order_id and order_id > 0:
+            await callback.answer("✅ این پرداخت قبلاً تأیید و سفارش شما تحویل داده شده است.", show_alert=True)
+            markup = None
+            extra_info = ""
+            if payment.get("product_id"):
+                sub_row = await db._fetchone(
+                    "SELECT id, email FROM subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                    (db_user["id"],),
+                )
+                if sub_row:
+                    markup = service_actions_inline(sub_row["id"], show_back=False)
+                    extra_info = f"\n📧 اکانت شما: <code>{sub_row['email']}</code>"
+            elif payment.get("renew_sub_id"):
+                markup = service_actions_inline(payment["renew_sub_id"], show_back=False)
+            elif payment.get("reseller_plan_id"):
+                markup = main_menu()
+
+            try:
+                await callback.message.edit_text(
+                    f"✅ <b>پرداخت شما قبلاً تأیید و سفارش تحویل داده شده است!</b>\n\n"
+                    f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
+                    f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>"
+                    f"{extra_info}\n\n"
+                    f"جهت دریافت کانفیگ یا مدیریت سرویس از دکمه‌های زیر استفاده کنید 👇",
+                    reply_markup=markup,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+
+        # Case 2: Payment approved (e.g. by web redirect or webhook) but fulfillment not complete
+        await callback.answer("⏳ در حال پردازش و تکمیل سفارش...", show_alert=False)
+        ful_res = await fulfill_payment(callback.bot, db, payment_id)
+
+        fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+        cur_bal = fresh_user["balance"] if fresh_user else db_user["balance"]
+
+        if ful_res.get("status") == "fulfilled":
+            sub_id = ful_res.get("sub_id")
+            markup = service_actions_inline(sub_id, show_back=False) if sub_id else main_menu()
+            try:
+                await callback.message.edit_text(
+                    f"✅ <b>پرداخت شما تأیید و سفارش با موفقیت تحویل شد!</b>\n\n"
+                    f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
+                    f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
+                    f"از دکمه‌های زیر برای دریافت کانفیگ یا لینک اتصال استفاده کنید 👇",
+                    reply_markup=markup,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        else:
+            # Fallback / manual continuation
+            prompt_text = "موجودی به کیف پول شما اضافه شد. اکنون می‌توانید سفارش خود را تکمیل کنید 👇"
+            markup = None
+            if payment.get("renew_sub_id"):
+                markup = renew_complete_inline(payment["renew_sub_id"])
+            elif payment.get("reseller_plan_id"):
+                markup = reseller_complete_inline(payment["reseller_plan_id"])
+            elif payment.get("product_id"):
+                markup = complete_purchase_inline(payment["product_id"])
+            else:
+                markup = main_menu()
+
+            try:
+                await callback.message.edit_text(
+                    f"✅ <b>پرداخت شما در درگاه کارت‌گذر با موفقیت تأیید شد!</b>\n\n"
+                    f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
+                    f"💵 موجودی فعلی: <b>{cur_bal:,} تومان</b>\n"
+                    f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
+                    f"{prompt_text}",
+                    reply_markup=markup,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
         return
 
     if payment["status"] in ("cancelled", "rejected"):
@@ -1749,22 +1829,53 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
 
     if approved_payment:
         # Fulfill order
-        await fulfill_payment(callback.bot, db, payment_id)
+        ful_res = await fulfill_payment(callback.bot, db, payment_id)
+        sub_id = ful_res.get("sub_id")
+        markup = None
+        if sub_id:
+            markup = service_actions_inline(sub_id, show_back=False)
+        elif payment.get("product_id"):
+            markup = complete_purchase_inline(payment["product_id"])
+        elif payment.get("renew_sub_id"):
+            markup = renew_complete_inline(payment["renew_sub_id"])
+        elif payment.get("reseller_plan_id"):
+            markup = reseller_complete_inline(payment["reseller_plan_id"])
+
         try:
             await callback.message.edit_text(
                 f"✅ <b>پرداخت شما با موفقیت تأیید شد!</b>\n\n"
-                f"💰 مبلغ: {payment['amount']:,} تومان\n"
+                f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
                 f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
-                f"سفارش شما تحویل داده شد.",
+                f"سفارش شما با موفقیت ثبت شد.",
+                reply_markup=markup,
                 parse_mode="HTML",
             )
         except Exception:
             pass
         await callback.answer("✅ پرداخت شما تأیید شد!", show_alert=True)
     else:
-        await callback.answer("✅ این پرداخت تأیید و سفارش شما قبلاً تحویل داده شده است.", show_alert=True)
+        # Already approved by concurrent worker
+        fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+        cur_bal = fresh_user["balance"] if fresh_user else db_user["balance"]
+        markup = None
+        if payment.get("product_id"):
+            markup = complete_purchase_inline(payment["product_id"])
+        elif payment.get("renew_sub_id"):
+            markup = renew_complete_inline(payment["renew_sub_id"])
+        elif payment.get("reseller_plan_id"):
+            markup = reseller_complete_inline(payment["reseller_plan_id"])
+
+        await callback.answer("✅ پرداخت قبلاً تأیید شده است.", show_alert=True)
         try:
-            await callback.message.edit_text("✅ پرداخت قبلاً تأیید شده است.")
+            await callback.message.edit_text(
+                f"✅ <b>پرداخت شما با موفقیت تأیید شد!</b>\n\n"
+                f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
+                f"💵 موجودی کیف پول: <b>{cur_bal:,} تومان</b>\n"
+                f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
+                f"جهت ادامه و تکمیل روند سفارش روی دکمه زیر کلیک کنید 👇",
+                reply_markup=markup,
+                parse_mode="HTML",
+            )
         except Exception:
             pass
 

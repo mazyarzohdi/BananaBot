@@ -165,10 +165,33 @@ if _web_domain:
     CSRF_TRUSTED_ORIGINS = [f"https://{_web_domain}", f"http://{_web_domain}"]
 
 # Telegram Bot token (read from bot's .env for OTP verification)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    for _env_file in [BOT_DIR / ".env", BASE_DIR / ".env"]:
+        if _env_file.exists():
+            try:
+                for _line in _env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    _line = _line.strip()
+                    if _line.startswith("BOT_TOKEN="):
+                        BOT_TOKEN = _line.split("=", 1)[1].strip().strip('\'"')
+                        break
+                if BOT_TOKEN:
+                    break
+            except Exception:
+                pass
 
 # Admin telegram IDs (comma-separated)
 ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "[]")
+if (not ADMIN_IDS_RAW or ADMIN_IDS_RAW == "[]") and (BOT_DIR / ".env").exists():
+    try:
+        for _line in (BOT_DIR / ".env").read_text(encoding="utf-8", errors="ignore").splitlines():
+            _line = _line.strip()
+            if _line.startswith("ADMIN_IDS="):
+                ADMIN_IDS_RAW = _line.split("=", 1)[1].strip().strip('\'"')
+                break
+    except Exception:
+        pass
+
 import json as _json
 try:
     _ids = _json.loads(ADMIN_IDS_RAW)

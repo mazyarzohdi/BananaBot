@@ -14,7 +14,10 @@ Used for two things:
 """
 
 import json
+import logging
 import mimetypes
+import os
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,12 +25,63 @@ import uuid
 
 from django.conf import settings
 
+logger = logging.getLogger(__name__)
+
 API_BASE = "https://api.telegram.org"
+_cached_token: str | None = None
+
+
+def _get_token() -> str:
+    global _cached_token
+    if _cached_token:
+        return _cached_token
+
+    token = (getattr(settings, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")).strip()
+    if token and token != "your_bot_token_here":
+        _cached_token = token
+        return token
+
+    # Check potential .env files
+    candidates = []
+    bot_dir = getattr(settings, "BOT_DIR", None)
+    if bot_dir:
+        candidates.append(Path(bot_dir) / ".env")
+        candidates.append(Path(bot_dir) / "webapp" / ".env")
+    base_dir = getattr(settings, "BASE_DIR", None)
+    if base_dir:
+        candidates.append(Path(base_dir) / ".env")
+        candidates.append(Path(base_dir).parent / ".env")
+
+    for env_path in candidates:
+        if env_path and env_path.exists():
+            try:
+                for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if line.startswith("BOT_TOKEN="):
+                        val = line.split("=", 1)[1].strip().strip('\'"')
+                        if val and val != "your_bot_token_here":
+                            _cached_token = val
+                            return val
+            except Exception:
+                pass
+
+    # Check database settings table
+    try:
+        from . import db as bot_db
+        db_token = bot_db.get_setting("bot_token", "")
+        if db_token and db_token != "your_bot_token_here":
+            _cached_token = db_token
+            return db_token
+    except Exception:
+        pass
+
+    return ""
 
 
 def _call(method: str, payload: dict, timeout: float = 10) -> dict | None:
-    token = settings.BOT_TOKEN
+    token = _get_token()
     if not token:
+        logger.error("Telegram API call '%s' aborted: BOT_TOKEN is missing or not configured.", method)
         return None
     url = f"{API_BASE}/bot{token}/{method}"
     data = json.dumps(payload).encode("utf-8")
@@ -36,10 +90,12 @@ def _call(method: str, payload: dict, timeout: float = 10) -> dict | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError):
-        # Best-effort: a Telegram notification failing should never block
-        # the admin's approve/reject action from completing in the DB.
+            data = json.loads(resp.read().decode("utf-8"))
+            if not data.get("ok"):
+                logger.warning("Telegram API call '%s' returned ok=False: %s", method, data)
+            return data
+    except Exception as exc:
+        logger.warning("Telegram API call '%s' failed: %s", method, exc)
         return None
 
 
@@ -68,7 +124,7 @@ def send_photo(
     bytes needs an actual file upload, so this builds the multipart body by
     hand rather than pulling in an HTTP client dependency just for this.
     """
-    token = settings.BOT_TOKEN
+    token = _get_token()
     if not token:
         return None
     url = f"{API_BASE}/bot{token}/sendPhoto"
@@ -124,7 +180,7 @@ def edit_message_text(chat_id: int, message_id: int, text: str) -> bool:
 
 
 def get_file_path(file_id: str, timeout: float = 10) -> str | None:
-    token = settings.BOT_TOKEN
+    token = _get_token()
     if not token:
         return None
     url = f"{API_BASE}/bot{token}/getFile?" + urllib.parse.urlencode({"file_id": file_id})
@@ -139,7 +195,7 @@ def get_file_path(file_id: str, timeout: float = 10) -> str | None:
 
 
 def download_file(file_path: str, timeout: float = 15) -> bytes | None:
-    token = settings.BOT_TOKEN
+    token = _get_token()
     if not token:
         return None
     url = f"{API_BASE}/file/bot{token}/{file_path}"
