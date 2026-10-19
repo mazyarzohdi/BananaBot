@@ -1,4 +1,4 @@
-"""3x-ui (MHSanaei) panel API client."""
+﻿"""3x-ui (MHSanaei) panel API client."""
 
 import json
 import logging
@@ -19,10 +19,33 @@ class XUIError(Exception):
 class XUIClient:
     """Async client for 3x-ui panel API using Bearer token authentication."""
 
-    def __init__(self, base_url: str, api_token: str, timeout: int = 30):
+    def __init__(self, base_url: str, api_token: str, timeout: int = 30, ssl_verify: bool = False):
         self.base_url = base_url.rstrip("/")
         self.api_token = api_token
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.ssl_verify = ssl_verify
+        self._session = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                trust_env=False,
+                timeout=self.timeout,
+            )
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -39,16 +62,16 @@ class XUIClient:
         ممکنه بسته به نسخه‌ی پنل در دسترس نباشه؛ صدازننده باید حتماً
         try/except بذاره و شکست این متد رو fatal در نظر نگیره."""
         url = f"{self.base_url}/panel/api/server/getDb"
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            async with session.get(url, headers=self._headers()) as resp:
-                if resp.status >= 400:
-                    raise XUIError(f"HTTP {resp.status}", resp.status)
-                content = await resp.read()
-                if not content or content[:1] == b"{":
-                    # got JSON back (likely an error/auth-failure payload),
-                    # not the sqlite file — treat as unavailable.
-                    raise XUIError("پنل فایل باینری برنگرداند (احتمالاً این endpoint در این نسخه در دسترس نیست)")
-                return content
+        session = self._get_session()
+        async with session.get(url, headers=self._headers()) as resp:
+            if resp.status >= 400:
+                raise XUIError(f"HTTP {resp.status}", resp.status)
+            content = await resp.read()
+            if not content or content[:1] == b"{":
+                # got JSON back (likely an error/auth-failure payload),
+                # not the sqlite file — treat as unavailable.
+                raise XUIError("پنل فایل باینری برنگرداند (احتمالاً این endpoint در این نسخه در دسترس نیست)")
+            return content
 
     async def _request(
         self,
@@ -57,25 +80,25 @@ class XUIClient:
         data: dict | list | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            kwargs: dict[str, Any] = {"headers": self._headers()}
-            if data is not None:
-                kwargs["json"] = data
-            async with session.request(method, url, **kwargs) as resp:
-                text = await resp.text()
-                try:
-                    body = json.loads(text) if text else {}
-                except json.JSONDecodeError:
-                    body = {"raw": text}
+        session = self._get_session()
+        kwargs: dict[str, Any] = {"headers": self._headers()}
+        if data is not None:
+            kwargs["json"] = data
+        async with session.request(method, url, **kwargs) as resp:
+            text = await resp.text()
+            try:
+                body = json.loads(text) if text else {}
+            except json.JSONDecodeError:
+                body = {"raw": text}
 
-                if resp.status >= 400:
-                    msg = body.get("msg", body.get("message", f"HTTP {resp.status}"))
-                    raise XUIError(str(msg), resp.status, body)
+            if resp.status >= 400:
+                msg = body.get("msg", body.get("message", f"HTTP {resp.status}"))
+                raise XUIError(str(msg), resp.status, body)
 
-                if isinstance(body, dict) and body.get("success") is False:
-                    raise XUIError(body.get("msg", "API error"), resp.status, body)
+            if isinstance(body, dict) and body.get("success") is False:
+                raise XUIError(body.get("msg", "API error"), resp.status, body)
 
-                return body
+            return body
 
     async def get_server_status(self) -> dict:
         result = await self._request("GET", "/panel/api/server/status")

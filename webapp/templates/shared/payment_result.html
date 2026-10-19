@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8"/>
@@ -187,11 +187,11 @@
   {% endif %}
 
   {% if bot_username %}
-    <a href="https://t.me/{{ bot_username }}" class="btn btn-primary" id="btn-back-bot">
+    <a href="https://t.me/{{ bot_username }}" onclick="returnToBot(event, '{{ bot_username }}');" class="btn btn-primary" id="btn-back-bot">
       <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
     </a>
   {% else %}
-    <a href="https://t.me" class="btn btn-primary" id="btn-back-bot">
+    <a href="https://t.me" onclick="returnToBot(event, '');" class="btn btn-primary" id="btn-back-bot">
       <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
     </a>
   {% endif %}
@@ -201,15 +201,29 @@
 </div>
 
 <script>
-  if (window.Telegram && window.Telegram.WebApp) {
-    window.Telegram.WebApp.ready();
-    window.Telegram.WebApp.expand();
-    const btn = document.getElementById('btn-back-bot');
-    if (btn) {
-      btn.addEventListener('click', function(e) {
+  function returnToBot(e, username) {
+    if (window.Telegram && window.Telegram.WebApp) {
+      try {
         window.Telegram.WebApp.close();
-      });
+        if (e) e.preventDefault();
+        return false;
+      } catch (err) {}
     }
+    if (username) {
+      if (e) e.preventDefault();
+      window.location.href = "tg://resolve?domain=" + encodeURIComponent(username);
+      setTimeout(function() {
+        window.location.href = "https://t.me/" + username;
+      }, 500);
+      return false;
+    }
+  }
+
+  if (window.Telegram && window.Telegram.WebApp) {
+    try {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+    } catch(e) {}
   }
 </script>
 

@@ -1,4 +1,4 @@
-"""Views for BananaBot Web Panel."""
+﻿"""Views for BananaBot Web Panel."""
 
 import json
 import logging
@@ -1284,7 +1284,7 @@ def _render_safe_fallback_html(tracking_code: str = "", bot_username: str = "", 
     <h1>{status_title}</h1>
     <p>{status_desc}</p>
     {f'<div class="details">{tr_row}</div>' if tr_row else ''}
-    <a href="{bot_link}" class="btn btn-pri">بازگشت به ربات تلگرام</a>
+    <a href="{bot_link}" class="btn btn-pri" id="btn-back">بازگشت به ربات تلگرام</a>
     <a href="javascript:void(0);" onclick="window.close();" class="btn btn-sec">بستن این صفحه</a>
   </div>
 </body>
@@ -1489,15 +1489,12 @@ def cardgozar_callback(request: HttpRequest):
                 if row:
                     payment = dict(row)
 
-        is_paid_signal = status_param in ("OK", "PAID", "SUCCESS", "COMPLETED")
-
+        # SECURITY HARDENING: Never trust client-supplied GET params to approve payments.
+        # Verification MUST come directly from CardGozar API server-to-server.
         if payment and payment["status"] == "pending":
             is_verified_paid = False
             ref_id = tracking_code
             payer_card = ""
-
-            if is_paid_signal:
-                is_verified_paid = True
 
             token_to_verify = order_token or payment.get("gateway_order_token", "")
             if token_to_verify and api_key:
@@ -1548,8 +1545,8 @@ def cardgozar_callback(request: HttpRequest):
                     if row:
                         payment = dict(row)
 
-        is_success = bool((payment and payment.get("status") == "approved") or is_paid_signal)
-        is_pending = bool(payment and payment.get("status") == "pending" and not is_paid_signal)
+        is_success = bool(payment and payment.get("status") == "approved")
+        is_pending = bool(payment and payment.get("status") == "pending")
 
         context = {
             "payment": payment if isinstance(payment, dict) else {},

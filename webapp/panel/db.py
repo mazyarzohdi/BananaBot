@@ -1,4 +1,4 @@
-"""Synchronous SQLite helpers for the web panel.
+﻿"""Synchronous SQLite helpers for the web panel.
 
 The bot uses aiosqlite (async). The web panel uses the same .db file
 but accesses it via the standard synchronous sqlite3 module — so no
@@ -150,6 +150,13 @@ def get_conn():
         conn = sqlite3.connect(settings.BOT_DB_PATH, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+        try:
             yield conn
             conn.commit()
         except Exception:
@@ -169,15 +176,33 @@ def rows_to_list(rows):
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 
+_panel_settings_cache = {}
+_panel_settings_lock = threading.Lock()
+_PANEL_SETTINGS_TTL = 10.0
+
+
 def get_setting(key: str, default: str = "") -> str:
+    now = time.time()
+    with _panel_settings_lock:
+        if key in _panel_settings_cache:
+            val, exp = _panel_settings_cache[key]
+            if now < exp:
+                return val
+
     with get_conn() as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         ).fetchone()
-    return row["value"] if row else default
+    val = row["value"] if row else default
+
+    with _panel_settings_lock:
+        _panel_settings_cache[key] = (val, now + _PANEL_SETTINGS_TTL)
+    return val
 
 
 def set_setting(key: str, value: str):
+    with _panel_settings_lock:
+        _panel_settings_cache[key] = (value, time.time() + _PANEL_SETTINGS_TTL)
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "

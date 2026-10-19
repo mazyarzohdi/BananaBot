@@ -1,4 +1,4 @@
-"""Telegram authentication helpers.
+﻿"""Telegram authentication helpers.
 
 BananaBot's panel supports two separate Telegram auth flows, which use two
 different signing algorithms per Telegram's own docs — mixing them up is a
@@ -44,7 +44,7 @@ def verify_telegram_auth(data: dict) -> bool:
     return True
 
 
-def verify_webapp_init_data(init_data: str, max_age_seconds: int = 86400) -> dict | None:
+def verify_webapp_init_data(init_data: str, max_age_seconds: int = 7200) -> dict | None:
     """Verify the `initData` string a Telegram Mini App sends to its backend.
 
     Returns the parsed Telegram user dict on success, or None if the data is

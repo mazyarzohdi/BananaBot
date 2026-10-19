@@ -1737,15 +1737,26 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
             return
 
         # Case 2: Payment approved (e.g. by web redirect or webhook) but fulfillment not complete
-        await callback.answer("⏳ در حال پردازش و تکمیل سفارش...", show_alert=False)
-        ful_res = await fulfill_payment(callback.bot, db, payment_id)
+        await callback.answer("⏳ در حال استعلام و تحویل سفارش...", show_alert=False)
+        ful_res = await fulfill_payment(callback.bot, db, payment_id, force=True)
 
         fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
         cur_bal = fresh_user["balance"] if fresh_user else db_user["balance"]
 
-        if ful_res.get("status") == "fulfilled":
+        if ful_res.get("status") in ("fulfilled", "already_fulfilled"):
             sub_id = ful_res.get("sub_id")
+            if not sub_id and payment.get("product_id"):
+                sub_row = await db._fetchone(
+                    "SELECT id FROM subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                    (db_user["id"],),
+                )
+                if sub_row:
+                    sub_id = sub_row["id"]
+            elif not sub_id and payment.get("renew_sub_id"):
+                sub_id = payment["renew_sub_id"]
+
             markup = service_actions_inline(sub_id, show_back=False) if sub_id else main_menu()
+            await callback.answer("✅ سفارش شما با موفقیت تحویل شد!", show_alert=True)
             try:
                 await callback.message.edit_text(
                     f"✅ <b>پرداخت شما تأیید و سفارش با موفقیت تحویل شد!</b>\n\n"
@@ -1757,6 +1768,10 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
                 )
             except Exception:
                 pass
+            return
+        elif ful_res.get("status") == "already_claimed":
+            await callback.answer("⏳ سفارش شما در حال ساخت و اتصال است. لطفاً چند لحظه دیگر بررسی فرمایید.", show_alert=True)
+            return
         else:
             # Fallback / manual continuation
             prompt_text = "موجودی به کیف پول شما اضافه شد. اکنون می‌توانید سفارش خود را تکمیل کنید 👇"
@@ -1770,6 +1785,7 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
             else:
                 markup = main_menu()
 
+            await callback.answer("✅ موجودی به کیف پول شما افزوده شد.", show_alert=True)
             try:
                 await callback.message.edit_text(
                     f"✅ <b>پرداخت شما در درگاه کارت‌گذر با موفقیت تأیید شد!</b>\n\n"
@@ -1827,36 +1843,37 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
         gateway_name="کارت‌گذر",
     )
 
-    if approved_payment:
-        # Fulfill order
-        ful_res = await fulfill_payment(callback.bot, db, payment_id)
-        sub_id = ful_res.get("sub_id")
-        markup = None
-        if sub_id:
-            markup = service_actions_inline(sub_id, show_back=False)
-        elif payment.get("product_id"):
-            markup = complete_purchase_inline(payment["product_id"])
-        elif payment.get("renew_sub_id"):
-            markup = renew_complete_inline(payment["renew_sub_id"])
-        elif payment.get("reseller_plan_id"):
-            markup = reseller_complete_inline(payment["reseller_plan_id"])
+    ful_res = await fulfill_payment(callback.bot, db, payment_id, force=True)
 
+    fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
+    cur_bal = fresh_user["balance"] if fresh_user else db_user["balance"]
+
+    if ful_res.get("status") in ("fulfilled", "already_fulfilled"):
+        sub_id = ful_res.get("sub_id")
+        if not sub_id and payment.get("product_id"):
+            sub_row = await db._fetchone(
+                "SELECT id FROM subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (db_user["id"],),
+            )
+            if sub_row:
+                sub_id = sub_row["id"]
+        elif not sub_id and payment.get("renew_sub_id"):
+            sub_id = payment["renew_sub_id"]
+
+        markup = service_actions_inline(sub_id, show_back=False) if sub_id else main_menu()
+        await callback.answer("✅ پرداخت شما تأیید و سفارش با موفقیت تحویل شد!", show_alert=True)
         try:
             await callback.message.edit_text(
-                f"✅ <b>پرداخت شما با موفقیت تأیید شد!</b>\n\n"
+                f"✅ <b>پرداخت شما با موفقیت تأیید و تحویل شد!</b>\n\n"
                 f"💰 مبلغ: <b>{payment['amount']:,} تومان</b>\n"
                 f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
-                f"سفارش شما با موفقیت ثبت شد.",
+                f"از دکمه‌های زیر برای دریافت کانفیگ یا لینک اتصال استفاده کنید 👇",
                 reply_markup=markup,
                 parse_mode="HTML",
             )
         except Exception:
             pass
-        await callback.answer("✅ پرداخت شما تأیید شد!", show_alert=True)
     else:
-        # Already approved by concurrent worker
-        fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
-        cur_bal = fresh_user["balance"] if fresh_user else db_user["balance"]
         markup = None
         if payment.get("product_id"):
             markup = complete_purchase_inline(payment["product_id"])
@@ -1865,7 +1882,7 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
         elif payment.get("reseller_plan_id"):
             markup = reseller_complete_inline(payment["reseller_plan_id"])
 
-        await callback.answer("✅ پرداخت قبلاً تأیید شده است.", show_alert=True)
+        await callback.answer("✅ پرداخت تأیید شد و به موجودی کیف پول افزوده شد.", show_alert=True)
         try:
             await callback.message.edit_text(
                 f"✅ <b>پرداخت شما با موفقیت تأیید شد!</b>\n\n"

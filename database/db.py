@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import secrets
@@ -19,9 +19,18 @@ class Database:
         settings = get_settings()
         self.path = path or settings.database_path
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = asyncio.Lock()
+        self._shared_conn = None
+        self._settings_cache: dict[str, tuple[str, float]] = {}
+        self._SETTINGS_TTL = 10.0
 
     async def connect(self):
         return await get_db_connection(self.path)
+
+    async def _get_shared_conn(self):
+        if self._shared_conn is None:
+            self._shared_conn = await self.connect()
+        return self._shared_conn
 
     async def init(self):
         # reconcile() is plain sync sqlite3 (see db_schema.py for why), so
@@ -38,31 +47,60 @@ class Database:
             )
 
     async def _fetchone(self, query: str, params: tuple = ()) -> dict | None:
-        conn = await self.connect()
-        try:
-            cursor = await conn.execute(query, params)
-            row = await cursor.fetchone()
-            return dict(row) if row else None
-        finally:
-            await conn.close()
+        async with self._lock:
+            conn = await self._get_shared_conn()
+            try:
+                cursor = await conn.execute(query, params)
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+            except Exception:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+                self._shared_conn = None
+                conn = await self._get_shared_conn()
+                cursor = await conn.execute(query, params)
+                row = await cursor.fetchone()
+                return dict(row) if row else None
 
     async def _fetchall(self, query: str, params: tuple = ()) -> list[dict]:
-        conn = await self.connect()
-        try:
-            cursor = await conn.execute(query, params)
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            await conn.close()
+        async with self._lock:
+            conn = await self._get_shared_conn()
+            try:
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+            except Exception:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+                self._shared_conn = None
+                conn = await self._get_shared_conn()
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
     async def _execute(self, query: str, params: tuple = ()) -> int:
-        conn = await self.connect()
-        try:
-            cursor = await conn.execute(query, params)
-            await conn.commit()
-            return cursor.lastrowid or 0
-        finally:
-            await conn.close()
+        async with self._lock:
+            conn = await self._get_shared_conn()
+            try:
+                cursor = await conn.execute(query, params)
+                await conn.commit()
+                is_insert = query.strip().upper().startswith("INSERT")
+                return (cursor.lastrowid or 0) if is_insert else max(0, cursor.rowcount or 0)
+            except Exception:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+                self._shared_conn = None
+                conn = await self._get_shared_conn()
+                cursor = await conn.execute(query, params)
+                await conn.commit()
+                is_insert = query.strip().upper().startswith("INSERT")
+                return (cursor.lastrowid or 0) if is_insert else max(0, cursor.rowcount or 0)
 
     # --- Users ---
     async def get_or_create_user(
@@ -279,10 +317,18 @@ class Database:
 
     # --- Settings ---
     async def get_setting(self, key: str, default: str = "") -> str:
+        now = time.time()
+        if key in self._settings_cache:
+            val, exp = self._settings_cache[key]
+            if now < exp:
+                return val
         row = await self._fetchone("SELECT value FROM settings WHERE key = ?", (key,))
-        return row["value"] if row else default
+        val = row["value"] if row else default
+        self._settings_cache[key] = (val, now + self._SETTINGS_TTL)
+        return val
 
     async def set_setting(self, key: str, value: str):
+        self._settings_cache[key] = (value, time.time() + self._SETTINGS_TTL)
         await self._execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),

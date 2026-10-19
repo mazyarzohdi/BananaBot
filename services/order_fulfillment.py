@@ -4,6 +4,7 @@ Handles immediate provisioning of VPN subscriptions, renewals, reseller plans,
 or wallet credits upon confirmed payment.
 """
 
+import asyncio
 import logging
 import time
 
@@ -21,42 +22,84 @@ from services.subscription import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
+_CLAIM_TIMESTAMPS: dict[int, float] = {}
+_PAYMENT_LOCKS: dict[int, asyncio.Lock] = {}
 
-async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
+
+def _get_payment_lock(payment_id: int) -> asyncio.Lock:
+    if payment_id not in _PAYMENT_LOCKS:
+        _PAYMENT_LOCKS[payment_id] = asyncio.Lock()
+    return _PAYMENT_LOCKS[payment_id]
+
+
+async def fulfill_payment(bot: Bot, db, payment_id: int, force: bool = False) -> dict:
     """Fulfills an approved payment: creates subscription, renews, or tops up balance.
 
     Args:
         bot: Aiogram Bot instance for sending notifications and config links.
         db: Database instance.
         payment_id: ID of the payment to fulfill.
+        force: If True (e.g. from manual user verify button), breaks any stale locks.
 
     Returns:
-        Dict describing fulfillment outcome: {"status": "fulfilled"|"credited"|"error", ...}
+        Dict describing fulfillment outcome: {"status": "fulfilled"|"credited"|"already_fulfilled"|"already_claimed"|"error", ...}
     """
     payment = await db.get_payment(payment_id)
     if not payment:
         logger.error("Payment #%s not found for fulfillment.", payment_id)
         return {"status": "error", "message": "payment_not_found"}
 
-    # Idempotency check: if order_id is already set (non-zero and not -1), already fulfilled
+    # Idempotency check: if order_id is already set (> 0), already fulfilled
     existing_order_id = payment.get("order_id")
     if existing_order_id and existing_order_id > 0:
         logger.warning("Payment #%s is already fulfilled (order_id=%s). Skipping duplicate fulfillment.", payment_id, existing_order_id)
         return {"status": "already_fulfilled", "order_id": existing_order_id}
 
-    # Atomically lock/claim this payment so no concurrent worker or next loop cycle can touch it
-    claimed = await db._execute(
-        "UPDATE payments SET order_id = -1 WHERE id = ? AND (order_id IS NULL OR order_id = 0)",
-        (payment_id,)
-    )
-    if claimed == 0:
-        logger.warning("Payment #%s is currently being fulfilled by another task. Skipping.", payment_id)
+    now = time.time()
+    last_claimed_at = _CLAIM_TIMESTAMPS.get(payment_id, 0.0)
+    if (now - last_claimed_at < 20.0) and not force:
+        logger.warning("Payment #%s is currently being fulfilled by another task (in-memory lock). Skipping.", payment_id)
         return {"status": "already_claimed"}
 
+    async with _get_payment_lock(payment_id):
+        # Refresh payment under lock
+        payment = await db.get_payment(payment_id)
+        if payment.get("order_id") and payment["order_id"] > 0:
+            return {"status": "already_fulfilled", "order_id": payment["order_id"]}
+
+        if force:
+            # Reset any stuck lock when user manually verifies
+            await db._execute("UPDATE payments SET handled_by = NULL WHERE id = ? AND handled_by IN (-1, -2)", (payment_id,))
+
+        # Atomically lock/claim using handled_by (handled_by has no foreign key constraint)
+        claimed = await db._execute(
+            "UPDATE payments SET handled_by = -1 WHERE id = ? AND (handled_by IS NULL OR handled_by = 0)",
+            (payment_id,)
+        )
+        if claimed == 0:
+            if payment.get("handled_by") == -1 and (now - last_claimed_at >= 20.0 or force):
+                logger.info("Reclaiming stale lock on payment #%s", payment_id)
+                claimed = 1
+            else:
+                logger.warning("Payment #%s is currently being fulfilled by another task. Skipping.", payment_id)
+                return {"status": "already_claimed"}
+
+        _CLAIM_TIMESTAMPS[payment_id] = now
+        try:
+            return await _do_fulfill_payment(bot, db, payment_id, payment)
+        except Exception as unhandled_err:
+            logger.exception("Unhandled failure in fulfill_payment for #%s: %s", payment_id, unhandled_err)
+            await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ? AND handled_by = -1", (payment_id,))
+            return {"status": "error", "message": str(unhandled_err)}
+        finally:
+            _CLAIM_TIMESTAMPS.pop(payment_id, None)
+
+
+async def _do_fulfill_payment(bot: Bot, db, payment_id: int, payment: dict) -> dict:
     user = await db._fetchone("SELECT * FROM users WHERE id = ?", (payment["user_id"],))
     if not user:
         logger.error("User #%s not found for payment #%s.", payment["user_id"], payment_id)
-        await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+        await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ?", (payment_id,))
         return {"status": "error", "message": "user_not_found"}
 
     telegram_id = int(user["telegram_id"])
@@ -67,7 +110,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
         product = await db.get_product(payment["product_id"])
         if not product:
             logger.warning("Product #%s not found for payment #%s. Kept as wallet deposit.", payment["product_id"], payment_id)
-            await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+            await db._execute("UPDATE payments SET handled_by = 0 WHERE id = ?", (payment_id,))
             await _notify_deposit_success(bot, telegram_id, payment["amount"], user["balance"])
             return {"status": "credited", "type": "product_fallback"}
 
@@ -80,7 +123,6 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
             )
 
             # Deduct balance (the payment amount was already credited upon approval)
-            # Final price consideration:
             price = max(0, product["price"] - int(payment.get("discount_amount") or 0))
             await db.deduct_balance_atomic(user["id"], price)
 
@@ -94,8 +136,8 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                 payment.get("payment_method", "cardgozar"),
                 f"خرید {product['name']} {gateway_note}{coupon_note}",
             )
-            # Save order_id to payments table immediately to seal fulfillment!
-            await db._execute("UPDATE payments SET order_id = ? WHERE id = ?", (order_id, payment_id))
+            # Save valid order_id to payments table and clear handled_by
+            await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
 
             # Send delivery message to user
             msg = t(
@@ -130,8 +172,8 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
 
         except Exception as exc:
             logger.exception("Failed to provision subscription on panel for payment #%s: %s", payment_id, exc)
-            # Mark order_id = 0 so we don't spam create on every poller run!
-            await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+            # Mark handled_by = -2 so background poller doesn't infinitely loop
+            await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ?", (payment_id,))
             # Safe fallback: Money is safely preserved in user's wallet!
             fail_msg = (
                 f"✅ پرداخت شما به مبلغ {payment['amount']:,} تومان تایید و به موجودی کیف پول شما افزوده شد.\n\n"
@@ -168,7 +210,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                         payment.get("payment_method", "cardgozar"),
                         f"تمدید سرویس #{sub['id']} از درگاه {payment.get('payment_method', 'cardgozar')}",
                     )
-                    await db._execute("UPDATE payments SET order_id = ? WHERE id = ?", (order_id, payment_id))
+                    await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
                     renew_msg = (
                         f"✅ سرویس #{sub['id']} ({sub['email']}) شما با موفقیت تمدید شد!\n"
                         f"📊 حجم جدید: {product['volume_gb']} GB\n"
@@ -187,7 +229,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                     return {"status": "fulfilled", "type": "renew", "sub_id": sub["id"], "order_id": order_id}
                 except Exception as exc:
                     logger.exception("Failed to auto-renew subscription #%s: %s", sub["id"], exc)
-                    await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+                    await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ?", (payment_id,))
                     await bot.send_message(
                         telegram_id,
                         f"✅ پرداخت شما تایید و موجودی شما شارژ شد.\nجهت تکمیل تمدید سرویس روی دکمه زیر بزنید 👇",
@@ -196,7 +238,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                     return {"status": "credited", "type": "renew_error", "error": str(exc)}
 
         # Fallback if sub not found
-        await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+        await db._execute("UPDATE payments SET handled_by = 0 WHERE id = ?", (payment_id,))
         await _notify_deposit_success(bot, telegram_id, payment["amount"], user["balance"])
         return {"status": "credited", "type": "renew_fallback"}
 
@@ -223,7 +265,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                     payment.get("payment_method", "cardgozar"),
                     f"خرید/تمدید نمایندگی {plan['name']}",
                 )
-                await db._execute("UPDATE payments SET order_id = ? WHERE id = ?", (order_id, payment_id))
+                await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
                 reseller_msg = (
                     f"✅ پلن نمایندگی «{plan['name']}» با موفقیت برای شما فعال شد!\n"
                     f"📊 سقف حجم: {plan['volume_gb']} GB\n"
@@ -238,7 +280,7 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                 return {"status": "fulfilled", "type": "reseller", "plan_id": plan["id"], "order_id": order_id}
             except Exception as exc:
                 logger.exception("Failed to auto-activate reseller plan #%s: %s", plan["id"], exc)
-                await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+                await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ?", (payment_id,))
                 await bot.send_message(
                     telegram_id,
                     f"✅ پرداخت تایید شد. لطفاً برای تکمیل فعال‌سازی نمایندگی روی دکمه زیر بزنید 👇",
@@ -246,13 +288,13 @@ async def fulfill_payment(bot: Bot, db, payment_id: int) -> dict:
                 )
                 return {"status": "credited", "type": "reseller_error", "error": str(exc)}
 
-        await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+        await db._execute("UPDATE payments SET handled_by = 0 WHERE id = ?", (payment_id,))
         await _notify_deposit_success(bot, telegram_id, payment["amount"], user["balance"])
         return {"status": "credited", "type": "reseller_fallback"}
 
     # 4. Standard wallet deposit fulfillment
     else:
-        await db._execute("UPDATE payments SET order_id = 0 WHERE id = ?", (payment_id,))
+        await db._execute("UPDATE payments SET handled_by = 0 WHERE id = ?", (payment_id,))
         fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (user["id"],))
         balance = fresh_user["balance"] if fresh_user else user["balance"]
         await _notify_deposit_success(bot, telegram_id, payment["amount"], balance, payment.get("gateway_ref_id"))

@@ -1,4 +1,4 @@
-"""CardGozar (کارت‌گذر) P2P Payment Gateway Client.
+﻿"""CardGozar (کارت‌گذر) P2P Payment Gateway Client.
 
 Implements official REST API v1 for CardGozar (https://cardgozar.ir/dashboard/api-docs)
 including payment creation, verification, public live polling, and HMAC-SHA256
@@ -9,10 +9,15 @@ import hashlib
 import hmac
 import json
 import logging
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+_unverified_ssl_ctx = ssl.create_default_context()
+_unverified_ssl_ctx.check_hostname = False
+_unverified_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 try:
     import aiohttp
@@ -37,6 +42,14 @@ class CardGozarClient:
         self.api_key = (api_key or "").strip()
         self.secret_key = (secret_key or "").strip()
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+
+    def _create_session(self, timeout_secs: float = 15) -> "aiohttp.ClientSession":
+        connector = aiohttp.TCPConnector(ssl=False)
+        return aiohttp.ClientSession(
+            connector=connector,
+            trust_env=False,
+            timeout=aiohttp.ClientTimeout(total=timeout_secs),
+        )
 
     def _headers(self, with_auth: bool = True) -> dict[str, str]:
         headers = {
@@ -87,19 +100,23 @@ class CardGozarClient:
             "amount": int(amount_rials),
         }
         if callback_url:
-            payload["callback_url"] = str(callback_url).strip()
+            cb = str(callback_url).strip()
+            lowered = cb.lower()
+            # CardGozar rejects private IPs and localhost with validation error
+            if not any(bad in lowered for bad in ("127.0.0.1", "localhost", "192.168.", "10.0.", "172.16.")):
+                if lowered.startswith("http://") or lowered.startswith("https://"):
+                    payload["callback_url"] = cb
         if order_id:
             payload["order_id"] = str(order_id)
         if description:
             payload["description"] = description[:500]
 
-        async with aiohttp.ClientSession() as session:
+        async with self._create_session(timeout_secs=timeout) as session:
             try:
                 async with session.post(
                     url,
                     json=payload,
                     headers=self._headers(with_auth=True),
-                    timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     status = resp.status
                     try:
@@ -152,12 +169,11 @@ class CardGozarClient:
             return self.verify_payment_sync(order_token, timeout)
 
         url = f"{self.base_url}/api/v1/payments/verify/{order_token}/"
-        async with aiohttp.ClientSession() as session:
+        async with self._create_session(timeout_secs=timeout) as session:
             try:
                 async with session.get(
                     url,
                     headers=self._headers(with_auth=True),
-                    timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     status = resp.status
                     try:
@@ -189,12 +205,11 @@ class CardGozarClient:
             return self.get_payment_status_sync(order_token, timeout)
 
         url = f"{self.base_url}/api/v1/payments/status/{order_token}/"
-        async with aiohttp.ClientSession() as session:
+        async with self._create_session(timeout_secs=timeout) as session:
             try:
                 async with session.get(
                     url,
                     headers=self._headers(with_auth=False),
-                    timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     if resp.status == 200:
                         return await resp.json()
@@ -217,7 +232,7 @@ class CardGozarClient:
         headers = self._headers(with_auth=True)
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_ctx) as resp:
                 status = resp.status
                 try:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -251,7 +266,7 @@ class CardGozarClient:
         headers = self._headers(with_auth=False)
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_ctx) as resp:
                 if resp.status == 200:
                     return json.loads(resp.read().decode("utf-8"))
                 return {"is_paid": False, "status": "UNKNOWN"}

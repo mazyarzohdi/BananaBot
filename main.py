@@ -1,4 +1,4 @@
-"""Application entry point."""
+﻿"""Application entry point."""
 
 import asyncio
 import logging
@@ -16,7 +16,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BufferedInputFile, MenuButtonWebApp, WebAppInfo
 
 from bot.handlers import admin_router, user_router
-from bot.middlewares import UserMiddleware
+from bot.middlewares import ThrottlingMiddleware, UserMiddleware
 from config import get_settings
 from database import get_db
 from services.cardgozar import CardGozarClient, CardGozarError
@@ -40,6 +40,12 @@ async def _cardgozar_polling_loop(bot: Bot, db):
     Ensures that if the user pays and closes the browser/Telegram without
     clicking 'بررسی و تایید' or if the webhook was unreachable, their order
     is still automatically verified and delivered within ~20 seconds."""
+    # Clean up any stuck locks from previous unexpected process termination
+    try:
+        await db._execute("UPDATE payments SET handled_by = NULL WHERE handled_by = -1")
+    except Exception:
+        pass
+
     while True:
         try:
             cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
@@ -81,7 +87,8 @@ async def _cardgozar_polling_loop(bot: Bot, db):
                 # Also fulfill any approved gateway payments that need service provisioning
                 approved_unfulfilled = await db._fetchall(
                     "SELECT id FROM payments WHERE status = 'approved' "
-                    "AND order_id IS NULL AND (product_id IS NOT NULL OR renew_sub_id IS NOT NULL OR reseller_plan_id IS NOT NULL) "
+                    "AND order_id IS NULL AND (handled_by IS NULL OR handled_by = 0) "
+                    "AND (product_id IS NOT NULL OR renew_sub_id IS NOT NULL OR reseller_plan_id IS NOT NULL) "
                     "AND payment_method = 'cardgozar' ORDER BY id ASC LIMIT 5"
                 )
                 for u_pay in approved_unfulfilled:
@@ -433,6 +440,10 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
 
+    throttling_middleware = ThrottlingMiddleware(rate_limit_seconds=0.4)
+    dp.message.middleware(throttling_middleware)
+    dp.callback_query.middleware(throttling_middleware)
+
     user_middleware = UserMiddleware()
     dp.message.middleware(user_middleware)
     dp.callback_query.middleware(user_middleware)
@@ -487,12 +498,25 @@ async def main():
     except Exception as exc:
         logger.debug("Payment startup sanitization: %s", exc)
 
-    asyncio.create_task(_cardgozar_polling_loop(bot, db))
-    asyncio.create_task(_expire_payments_loop(bot, db))
-    asyncio.create_task(_expiry_reminder_loop(bot, db))
-    asyncio.create_task(_auto_renew_loop(bot, db))
-    asyncio.create_task(_scheduled_backup_loop(bot, db))
-    asyncio.create_task(_game_season_settle_loop())
+    async def _supervised_loop(name: str, coro_fn, *args, **kwargs):
+        """Wraps a background polling loop with automatic error logging and restart."""
+        while True:
+            try:
+                logger.info("Background worker '%s' started.", name)
+                await coro_fn(*args, **kwargs)
+            except asyncio.CancelledError:
+                logger.info("Background worker '%s' cancelled.", name)
+                break
+            except Exception as exc:
+                logger.exception("Background worker '%s' crashed: %s. Restarting in 10s...", name, exc)
+                await asyncio.sleep(10)
+
+    asyncio.create_task(_supervised_loop("CardGozarPoller", _cardgozar_polling_loop, bot, db))
+    asyncio.create_task(_supervised_loop("PaymentExpiry", _expire_payments_loop, bot, db))
+    asyncio.create_task(_supervised_loop("ExpiryReminder", _expiry_reminder_loop, bot, db))
+    asyncio.create_task(_supervised_loop("AutoRenew", _auto_renew_loop, bot, db))
+    asyncio.create_task(_supervised_loop("ScheduledBackup", _scheduled_backup_loop, bot, db))
+    asyncio.create_task(_supervised_loop("GameSeasonSettle", _game_season_settle_loop))
     await dp.start_polling(bot)
 
 
