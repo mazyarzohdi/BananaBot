@@ -42,24 +42,33 @@ class CardGozarClient:
 
     async def create_payment(
         self,
-        amount_rials: int,
-        callback_url: str,
+        amount_rials: int | None = None,
+        callback_url: str | None = None,
         order_id: str = "",
         description: str = "",
         timeout: int = 15,
+        *,
+        amount_toman: int | None = None,
     ) -> dict[str, Any]:
         """Creates a payment invoice on CardGozar.
 
         Args:
             amount_rials: Base amount in Rials (max 500,000,000 Rials).
-            callback_url: Buyer return URL & webhook destination.
+            callback_url: Buyer return URL & webhook destination (optional).
             order_id: Merchant internal order/payment ID.
             description: Payment description displayed to the buyer.
             timeout: Request timeout in seconds.
+            amount_toman: Base amount in Tomans (converted to Rials as amount_toman * 10).
 
         Returns:
             Dict containing order_token, tracking_code, payment_url, final_amount, etc.
         """
+        if amount_rials is None:
+            if amount_toman is not None:
+                amount_rials = amount_toman * 10
+            else:
+                raise CardGozarError("مبلغ پرداخت مشخص نشده است.")
+
         if not self.api_key:
             raise CardGozarError("کلید API کارت‌گذر تنظیم نشده است.")
 
@@ -67,10 +76,11 @@ class CardGozarClient:
             raise CardGozarError("مبلغ پرداخت باید بزرگ‌تر از صفر باشد.")
 
         url = f"{self.base_url}/api/v1/payments/create/"
-        payload = {
+        payload: dict[str, Any] = {
             "amount": int(amount_rials),
-            "callback_url": callback_url,
         }
+        if callback_url:
+            payload["callback_url"] = str(callback_url).strip()
         if order_id:
             payload["order_id"] = str(order_id)
         if description:
@@ -91,7 +101,10 @@ class CardGozarClient:
                         text = await resp.text()
                         data = {"error": text}
 
-                    if status == 201 and data.get("payment_url"):
+                    order_tok = data.get("order_token")
+                    if status in (200, 201) and (data.get("payment_url") or order_tok):
+                        if not data.get("payment_url") and order_tok:
+                            data["payment_url"] = f"https://payments.cardgozar.ir/pay/{order_tok}"
                         logger.info(
                             "CardGozar order created: token=%s, final_amount=%s Rials",
                             data.get("order_token"),
