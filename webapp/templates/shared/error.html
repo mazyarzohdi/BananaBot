@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#080b11"/>
+  <title>{{ title|default:"خطا در پردازش" }} | BananaBot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Vazirmatn', sans-serif; }
+    body {
+      background: radial-gradient(circle at 50% 20%, #151b29 0%, #080b11 100%);
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      background: rgba(18, 24, 38, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 1.5rem;
+      padding: 2.5rem 2rem;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+    }
+    .icon-badge {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.2rem;
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 2px solid rgba(239, 68, 68, 0.3);
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .subtitle {
+      font-size: 0.92rem;
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 1.75rem;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.9rem;
+      border-radius: 0.85rem;
+      font-size: 0.98rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: none;
+      margin-bottom: 0.75rem;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      color: white;
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="icon-badge">
+    <i class="fa fa-exclamation-triangle"></i>
+  </div>
+  <h1>{{ title|default:"عملیات انجام نشد" }}</h1>
+  <p class="subtitle">{{ message|default:"در ارتباط با سرور خطایی رخ داده است. لطفاً به ربات تلگرام بازگردید." }}</p>
+
+  {% if bot_username %}
+    <a href="https://t.me/{{ bot_username }}" class="btn btn-primary">
+      <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
+    </a>
+  {% else %}
+    <a href="https://t.me" class="btn btn-primary">
+      <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
+    </a>
+  {% endif %}
+  <a href="javascript:void(0);" onclick="window.close();" class="btn btn-secondary">
+    <i class="fa fa-times-circle"></i> بستن صفحه
+  </a>
+</div>
+</body>
+</html>

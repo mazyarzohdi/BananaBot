@@ -112,7 +112,12 @@ def admin_required(view_func):
 
 
 def get_current_user(request: HttpRequest) -> dict | None:
-    return request.session.get("tg_user")
+    if not hasattr(request, "session"):
+        return None
+    try:
+        return request.session.get("tg_user")
+    except Exception:
+        return None
 
 
 def is_admin(request: HttpRequest) -> bool:

@@ -129,7 +129,7 @@
 <body>
 
 <div class="card">
-  {% if payment and payment.status == 'approved' %}
+  {% if is_success %}
     <div class="icon-badge success-badge">
       <i class="fa fa-check"></i>
     </div>
@@ -137,14 +137,22 @@
     <p class="subtitle">سفارش شما به‌صورت خودکار توسط سیستم تأیید و تحویل داده شد.</p>
 
     <div class="details">
+      {% if amount %}
       <div class="row">
         <span class="label">مبلغ پرداختی:</span>
-        <span class="val">{{ payment.amount|default:0 }} تومان</span>
+        <span class="val">{{ amount }} تومان</span>
       </div>
-      {% if payment.gateway_ref_id %}
+      {% endif %}
+      {% if tracking_code %}
       <div class="row">
         <span class="label">شماره پیگیری:</span>
-        <span class="val" style="direction:ltr;">{{ payment.gateway_ref_id }}</span>
+        <span class="val" style="direction:ltr;">{{ tracking_code }}</span>
+      </div>
+      {% endif %}
+      {% if unique_code %}
+      <div class="row">
+        <span class="label">شناسه تراکنش:</span>
+        <span class="val" style="direction:ltr;">{{ unique_code }}</span>
       </div>
       {% endif %}
       <div class="row">
@@ -153,15 +161,23 @@
       </div>
       <div class="row">
         <span class="label">وضعیت سفارش:</span>
-        <span class="val" style="color: #10b981;">✅ تکمیل شده</span>
+        <span class="val" style="color: #10b981;">✅ تکمیل و تحویل شد</span>
       </div>
     </div>
-  {% elif payment and payment.status == 'pending' %}
+  {% elif is_pending %}
     <div class="icon-badge pending-badge">
       <i class="fa fa-clock"></i>
     </div>
     <h1>در انتظار دریافت واریزی</h1>
-    <p class="subtitle">در حال استعلام واریزی شما از بانک. در صورت انجام تراکنش، سفارش ظرف چند ثانیه تحویل می‌شود.</p>
+    <p class="subtitle">در حال استعلام واریزی شما از درگاه. در صورت انجام تراکنش، سفارش ظرف چند ثانیه تحویل می‌شود.</p>
+    {% if tracking_code %}
+    <div class="details">
+      <div class="row">
+        <span class="label">شماره پیگیری:</span>
+        <span class="val" style="direction:ltr;">{{ tracking_code }}</span>
+      </div>
+    </div>
+    {% endif %}
   {% else %}
     <div class="icon-badge failed-badge">
       <i class="fa fa-times"></i>
@@ -174,9 +190,13 @@
     <a href="https://t.me/{{ bot_username }}" class="btn btn-primary" id="btn-back-bot">
       <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
     </a>
+  {% else %}
+    <a href="https://t.me" class="btn btn-primary" id="btn-back-bot">
+      <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
+    </a>
   {% endif %}
-  <a href="/" class="btn btn-secondary">
-    <i class="fa fa-home"></i> صفحه اصلی پنل
+  <a href="javascript:void(0);" onclick="window.close();" class="btn btn-secondary">
+    <i class="fa fa-times-circle"></i> بستن این صفحه
   </a>
 </div>
 

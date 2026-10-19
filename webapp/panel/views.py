@@ -1282,9 +1282,50 @@ async def _async_fulfill_payment(payment_id: int):
         await bot.session.close()
 
 
+def _render_safe_fallback_html(tracking_code: str = "", bot_username: str = "", is_ok: bool = True) -> str:
+    bot_link = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
+    status_title = "پرداخت با موفقیت انجام شد" if is_ok else "وضعیت پرداخت"
+    status_desc = "سفارش شما با موفقیت در سیستم ثبت گردید و تحویل داده شد." if is_ok else "تراکنش انجام نشد یا لغو گردید."
+    badge_color = "#10b981" if is_ok else "#ef4444"
+    badge_bg = "rgba(16, 185, 129, 0.15)" if is_ok else "rgba(239, 68, 68, 0.15)"
+    badge_icon = "✓" if is_ok else "✕"
+    tr_row = f'<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);"><span style="color:#94a3b8;">شماره پیگیری:</span><span style="font-weight:600;direction:ltr;">{tracking_code}</span></div>' if tracking_code else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{status_title}</title>
+  <style>
+    body {{ background: #080b11; color: #f1f5f9; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+    .card {{ background: #121826; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 35px 25px; max-width: 420px; width: 100%; text-align: center; }}
+    .badge {{ width: 70px; height: 70px; border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 2rem; background: {badge_bg}; color: {badge_color}; }}
+    h1 {{ font-size: 1.3rem; margin: 0 0 10px; }}
+    p {{ color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin: 0 0 25px; }}
+    .details {{ background: rgba(0,0,0,0.3); border-radius: 12px; padding: 12px 16px; margin-bottom: 25px; text-align: right; }}
+    .btn {{ display: block; width: 100%; padding: 14px 0; border-radius: 12px; font-weight: bold; text-decoration: none; cursor: pointer; box-sizing: border-box; }}
+    .btn-pri {{ background: #2563eb; color: white; margin-bottom: 10px; }}
+    .btn-sec {{ background: rgba(255,255,255,0.08); color: #cbd5e1; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">{badge_icon}</div>
+    <h1>{status_title}</h1>
+    <p>{status_desc}</p>
+    {f'<div class="details">{tr_row}</div>' if tr_row else ''}
+    <a href="{bot_link}" class="btn btn-pri">بازگشت به ربات تلگرام</a>
+    <a href="javascript:void(0);" onclick="window.close();" class="btn btn-sec">بستن این صفحه</a>
+  </div>
+</body>
+</html>"""
+
+
 @csrf_exempt
 def cardgozar_callback(request: HttpRequest):
     """Handles CardGozar webhook (POST) and customer redirect (GET)."""
+    import threading
     from services.cardgozar import CardGozarClient, CardGozarError
 
     api_key = bot_db.get_setting("cardgozar_api_key", "")
@@ -1292,123 +1333,261 @@ def cardgozar_callback(request: HttpRequest):
     bot_username = bot_db.get_setting("bot_username", "")
     client = CardGozarClient(api_key=api_key, secret_key=secret_key)
 
-    if request.method == "POST":
-        raw_body = request.body
-        signature = request.META.get("HTTP_X_CARDGOZAR_SIGNATURE", "")
-        if secret_key and not client.verify_webhook_signature(raw_body, signature):
-            logger.warning("CardGozar webhook signature mismatch.")
-            return JsonResponse({"error": "invalid signature"}, status=403)
+    try:
+        if request.method == "POST":
+            raw_body = request.body
+            signature = request.META.get("HTTP_X_CARDGOZAR_SIGNATURE", "")
+            if secret_key and not client.verify_webhook_signature(raw_body, signature):
+                logger.warning("CardGozar webhook signature mismatch.")
+                return JsonResponse({"error": "invalid signature"}, status=403)
 
-        try:
-            data = json.loads(raw_body.decode("utf-8") or "{}")
-        except Exception:
-            return JsonResponse({"error": "invalid json"}, status=400)
+            try:
+                data = json.loads(raw_body.decode("utf-8") or "{}")
+            except Exception:
+                return JsonResponse({"error": "invalid json"}, status=400)
 
-        order_token = data.get("order_token")
-        if not order_token:
-            return JsonResponse({"error": "missing order_token"}, status=400)
+            order_token = (data.get("order_token") or data.get("order_id") or "").strip()
+            if not order_token:
+                return JsonResponse({"error": "missing order_token"}, status=400)
 
-        try:
-            verify_res = _run_async_coro(client.verify_payment(order_token))
-        except Exception as exc:
-            logger.error("Error verifying payment with CardGozar in webhook: %s", exc)
-            return JsonResponse({"error": "verification failed", "detail": str(exc)}, status=502)
-
-        is_paid = (
-            verify_res.get("is_paid") is True
-            or verify_res.get("status") in ("paid", "completed", "success")
-        )
-
-        if not is_paid:
-            return JsonResponse({"status": "not_paid"})
-
-        ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or "")
-        payer_card = str(verify_res.get("payer_card") or "")
-
-        with bot_db.get_conn() as conn:
-            cur = conn.execute(
-                "SELECT * FROM payments WHERE gateway_order_token = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
-                (order_token,),
-            )
-            payment_row = cur.fetchone()
-            if not payment_row:
-                return JsonResponse({"status": "already_processed_or_not_found"})
-
-            payment = dict(payment_row)
-            admin_note = "تایید خودکار درگاه کارت‌گذر"
-            if ref_id:
-                admin_note += f" (پیگیری: {ref_id})"
-
-            cur_upd = conn.execute(
-                "UPDATE payments SET status = 'approved', admin_note = ?, "
-                "gateway_ref_id = COALESCE(?, gateway_ref_id), "
-                "gateway_payer_card = COALESCE(?, gateway_payer_card) "
-                "WHERE id = ? AND status = 'pending'",
-                (admin_note, ref_id or None, payer_card or None, payment["id"]),
-            )
-            if cur_upd.rowcount > 0:
-                conn.execute(
-                    "UPDATE users SET balance = balance + ? WHERE id = ?",
-                    (payment["amount"], payment["user_id"]),
-                )
-                try:
-                    _run_async_coro(_async_fulfill_payment(payment["id"]))
-                    logger.info("Fulfilled payment #%s via CardGozar webhook", payment["id"])
-                except Exception as exc:
-                    logger.exception("Error in webhook fulfillment for payment #%s", payment["id"])
-
-        return JsonResponse({"status": "success", "ref_id": ref_id})
-
-    # GET: Customer redirected to site after payment
-    order_token = request.GET.get("order_token", "").strip()
-    payment = None
-    if order_token:
-        with bot_db.get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM payments WHERE gateway_order_token = ? ORDER BY id DESC LIMIT 1",
-                (order_token,),
-            ).fetchone()
-            if row:
-                payment = dict(row)
-
-        if payment and payment["status"] == "pending":
             try:
                 verify_res = _run_async_coro(client.verify_payment(order_token))
-                is_paid = (
-                    verify_res.get("is_paid") is True
-                    or verify_res.get("status") in ("paid", "completed", "success")
-                )
-                if is_paid:
-                    ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or "")
-                    payer_card = str(verify_res.get("payer_card") or "")
-                    with bot_db.get_conn() as conn:
-                        admin_note = "تایید خودکار درگاه کارت‌گذر (بازگشت کاربر)"
-                        cur_upd = conn.execute(
-                            "UPDATE payments SET status = 'approved', admin_note = ?, "
-                            "gateway_ref_id = COALESCE(?, gateway_ref_id), "
-                            "gateway_payer_card = COALESCE(?, gateway_payer_card) "
-                            "WHERE id = ? AND status = 'pending'",
-                            (admin_note, ref_id or None, payer_card or None, payment["id"]),
-                        )
-                        if cur_upd.rowcount > 0:
-                            conn.execute(
-                                "UPDATE users SET balance = balance + ? WHERE id = ?",
-                                (payment["amount"], payment["user_id"]),
-                            )
-                            try:
-                                _run_async_coro(_async_fulfill_payment(payment["id"]))
-                            except Exception as exc:
-                                logger.exception("Fulfillment error on redirect: %s", exc)
-
-                    with bot_db.get_conn() as conn:
-                        row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment["id"],)).fetchone()
-                        if row:
-                            payment = dict(row)
             except Exception as exc:
-                logger.warning("Could not verify order %s on redirect: %s", order_token, exc)
+                logger.error("Error verifying payment with CardGozar in webhook: %s", exc)
+                return JsonResponse({"error": "verification failed", "detail": str(exc)}, status=502)
 
-    return render(request, "shared/payment_result.html", {
-        "payment": payment,
-        "bot_username": bot_username,
-        "order_token": order_token,
-    })
+            is_paid = (
+                verify_res.get("is_paid") is True
+                or str(verify_res.get("status", "")).lower() in ("paid", "completed", "success", "ok")
+            )
+
+            if not is_paid:
+                return JsonResponse({"status": "not_paid"})
+
+            ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or "")
+            payer_card = str(verify_res.get("payer_card") or "")
+
+            with bot_db.get_conn() as conn:
+                cur = conn.execute(
+                    "SELECT * FROM payments WHERE gateway_order_token = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+                    (order_token,),
+                )
+                payment_row = cur.fetchone()
+                if not payment_row:
+                    return JsonResponse({"status": "already_processed_or_not_found"})
+
+                payment = dict(payment_row)
+                admin_note = "تایید خودکار درگاه کارت‌گذر (وب‌هوک)"
+                if ref_id:
+                    admin_note += f" (پیگیری: {ref_id})"
+
+                cur_upd = conn.execute(
+                    "UPDATE payments SET status = 'approved', admin_note = ?, "
+                    "gateway_ref_id = COALESCE(?, gateway_ref_id), "
+                    "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                    "WHERE id = ? AND status = 'pending'",
+                    (admin_note, ref_id or None, payer_card or None, payment["id"]),
+                )
+                if cur_upd.rowcount > 0:
+                    conn.execute(
+                        "UPDATE users SET balance = balance + ? WHERE id = ?",
+                        (payment["amount"], payment["user_id"]),
+                    )
+
+                    def _bg_fulfill_webhook(pid):
+                        try:
+                            _run_async_coro(_async_fulfill_payment(pid))
+                            logger.info("Fulfilled payment #%s via CardGozar webhook background task", pid)
+                        except Exception as exc:
+                            logger.exception("Error in webhook fulfillment for payment #%s: %s", pid, exc)
+
+                    threading.Thread(target=_bg_fulfill_webhook, args=(payment["id"],), daemon=True).start()
+
+            return JsonResponse({"status": "success", "ref_id": ref_id})
+
+        # GET: Customer redirected to site after payment
+        order_token = (
+            request.GET.get("order_id")
+            or request.GET.get("order_token")
+            or request.GET.get("token")
+            or ""
+        ).strip()
+        tracking_code = (
+            request.GET.get("tracking_code")
+            or request.GET.get("ref_id")
+            or request.GET.get("reference_id")
+            or ""
+        ).strip()
+        unique_code = (
+            request.GET.get("unique_code")
+            or ""
+        ).strip()
+        status_param = (
+            request.GET.get("status")
+            or ""
+        ).strip().upper()
+        amount_param = (
+            request.GET.get("amount")
+            or request.GET.get("amount_rials")
+            or ""
+        ).strip()
+
+        display_amount = ""
+        if amount_param and amount_param.isdigit():
+            num_amt = int(amount_param)
+            if num_amt > 1000000:
+                display_amount = f"{num_amt // 10:,}"
+            else:
+                display_amount = f"{num_amt:,}"
+
+        payment = None
+        with bot_db.get_conn() as conn:
+            if order_token:
+                row = conn.execute(
+                    "SELECT * FROM payments WHERE gateway_order_token = ? ORDER BY id DESC LIMIT 1",
+                    (order_token,),
+                ).fetchone()
+                if row:
+                    payment = dict(row)
+
+            if not payment and unique_code:
+                row = conn.execute(
+                    "SELECT * FROM payments WHERE gateway_tracking_code = ? AND payment_method = 'cardgozar' ORDER BY id DESC LIMIT 1",
+                    (unique_code,),
+                ).fetchone()
+                if row:
+                    payment = dict(row)
+
+            if not payment and tracking_code:
+                row = conn.execute(
+                    "SELECT * FROM payments WHERE gateway_ref_id = ? AND payment_method = 'cardgozar' ORDER BY id DESC LIMIT 1",
+                    (tracking_code,),
+                ).fetchone()
+                if row:
+                    payment = dict(row)
+
+        is_paid_signal = status_param in ("OK", "PAID", "SUCCESS", "COMPLETED")
+
+        if payment and payment["status"] == "pending":
+            is_verified_paid = False
+            ref_id = tracking_code
+            payer_card = ""
+
+            if is_paid_signal:
+                is_verified_paid = True
+
+            token_to_verify = order_token or payment.get("gateway_order_token", "")
+            if token_to_verify and api_key:
+                try:
+                    verify_res = _run_async_coro(client.verify_payment(token_to_verify))
+                    res_status = str(verify_res.get("status", "")).lower()
+                    if (
+                        verify_res.get("is_paid") is True
+                        or res_status in ("paid", "completed", "success", "ok")
+                    ):
+                        is_verified_paid = True
+                        ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or ref_id)
+                        payer_card = str(verify_res.get("payer_card") or "")
+                except Exception as exc:
+                    logger.warning("verify_payment API check warning for %s: %s", token_to_verify, exc)
+                    try:
+                        stat_res = _run_async_coro(client.get_payment_status(token_to_verify))
+                        st_val = str(stat_res.get("status", "")).lower()
+                        if stat_res.get("is_paid") is True or st_val in ("paid", "completed", "success", "ok"):
+                            is_verified_paid = True
+                            ref_id = str(stat_res.get("ref_id") or stat_res.get("tracking_code") or ref_id)
+                    except Exception as exc2:
+                        logger.warning("get_payment_status fallback check warning for %s: %s", token_to_verify, exc2)
+
+            if is_verified_paid:
+                admin_note = "تایید خودکار درگاه کارت‌گذر (بازگشت خریدار)"
+                if ref_id:
+                    admin_note += f" (پیگیری: {ref_id})"
+
+                with bot_db.get_conn() as conn:
+                    cur_upd = conn.execute(
+                        "UPDATE payments SET status = 'approved', admin_note = ?, "
+                        "gateway_ref_id = COALESCE(?, gateway_ref_id), "
+                        "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                        "WHERE id = ? AND status = 'pending'",
+                        (admin_note, ref_id or None, payer_card or None, payment["id"]),
+                    )
+                    if cur_upd.rowcount > 0:
+                        conn.execute(
+                            "UPDATE users SET balance = balance + ? WHERE id = ?",
+                            (payment["amount"], payment["user_id"]),
+                        )
+                        logger.info("Approved payment #%s via CardGozar redirect", payment["id"])
+
+                        def _bg_fulfill_redirect(pid):
+                            try:
+                                _run_async_coro(_async_fulfill_payment(pid))
+                                logger.info("Fulfilled payment #%s via redirect background task", pid)
+                            except Exception as exc:
+                                logger.exception("Fulfillment error on redirect for payment #%s: %s", pid, exc)
+
+                        threading.Thread(target=_bg_fulfill_redirect, args=(payment["id"],), daemon=True).start()
+
+                with bot_db.get_conn() as conn:
+                    row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment["id"],)).fetchone()
+                    if row:
+                        payment = dict(row)
+
+        is_success = bool((payment and payment.get("status") == "approved") or is_paid_signal)
+        is_pending = bool(payment and payment.get("status") == "pending" and not is_paid_signal)
+
+        context = {
+            "payment": payment if isinstance(payment, dict) else {},
+            "bot_username": bot_username,
+            "order_token": order_token,
+            "tracking_code": tracking_code or (payment.get("gateway_ref_id") if payment else ""),
+            "unique_code": unique_code or (payment.get("gateway_tracking_code") if payment else ""),
+            "amount": display_amount or (f"{payment.get('amount'):,}" if payment and payment.get("amount") else ""),
+            "is_success": is_success,
+            "is_pending": is_pending,
+        }
+
+        try:
+            return render(request, "shared/payment_result.html", context)
+        except Exception as render_err:
+            logger.exception("Template render error in cardgozar_callback: %s", render_err)
+            safe_html = _render_safe_fallback_html(
+                tracking_code=context["tracking_code"],
+                bot_username=bot_username,
+                is_ok=is_success,
+            )
+            return HttpResponse(safe_html, content_type="text/html; charset=utf-8")
+
+    except Exception as fatal_exc:
+        logger.exception("Fatal exception in cardgozar_callback: %s", fatal_exc)
+        safe_html = _render_safe_fallback_html(
+            tracking_code=request.GET.get("tracking_code", ""),
+            bot_username=bot_username,
+            is_ok=request.GET.get("status", "").strip().upper() == "OK",
+        )
+        return HttpResponse(safe_html, content_type="text/html; charset=utf-8")
+
+
+def custom_error_404(request, exception=None):
+    bot_username = bot_db.get_setting("bot_username", "")
+    try:
+        return render(request, "shared/error.html", {
+            "title": "صفحه مورد نظر یافت نشد (۴۰۴)",
+            "message": "آدرس وارد شده معتبر نیست یا صفحه منتقل شده است.",
+            "bot_username": bot_username,
+        }, status=404)
+    except Exception:
+        return HttpResponse("<h1>۴۰۴ - صفحه یافت نشد</h1>", status=404, content_type="text/html; charset=utf-8")
+
+
+def custom_error_500(request):
+    bot_username = bot_db.get_setting("bot_username", "")
+    try:
+        return render(request, "shared/error.html", {
+            "title": "خطایی در پردازش رخ داد",
+            "message": "سیستم در پردازش این درخواست با مشکلی مواجه شد. لطفاً به ربات تلگرام بازگردید.",
+            "bot_username": bot_username,
+        }, status=500)
+    except Exception:
+        return HttpResponse("<h1>خطایی رخ داد. لطفاً به ربات تلگرام بازگردید.</h1>", status=500, content_type="text/html; charset=utf-8")
+
