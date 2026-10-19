@@ -7,10 +7,17 @@ webhook signature validation.
 
 import hashlib
 import hmac
+import json
 import logging
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +148,9 @@ class CardGozarClient:
         if not order_token:
             raise CardGozarError("شناسه سفارش (order_token) ارائه نشده است.")
 
+        if not aiohttp:
+            return self.verify_payment_sync(order_token, timeout)
+
         url = f"{self.base_url}/api/v1/payments/verify/{order_token}/"
         async with aiohttp.ClientSession() as session:
             try:
@@ -175,6 +185,9 @@ class CardGozarClient:
         if not order_token:
             raise CardGozarError("شناسه سفارش (order_token) ارائه نشده است.")
 
+        if not aiohttp:
+            return self.get_payment_status_sync(order_token, timeout)
+
         url = f"{self.base_url}/api/v1/payments/status/{order_token}/"
         async with aiohttp.ClientSession() as session:
             try:
@@ -189,6 +202,62 @@ class CardGozarClient:
             except Exception as exc:
                 logger.debug("Live status check error for %s: %s", order_token, exc)
                 return {"is_paid": False, "error": str(exc)}
+
+    def verify_payment_sync(self, order_token: str, timeout: float = 10) -> dict[str, Any]:
+        """Queries and verifies payment completion with CardGozar API synchronously.
+        Uses Python's standard library (urllib.request) without requiring aiohttp.
+        """
+        if not self.api_key:
+            raise CardGozarError("کلید API کارت‌گذر تنظیم نشده است.")
+
+        if not order_token:
+            raise CardGozarError("شناسه سفارش (order_token) ارائه نشده است.")
+
+        url = f"{self.base_url}/api/v1/payments/verify/{order_token}/"
+        headers = self._headers(with_auth=True)
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = resp.status
+                try:
+                    data = json.loads(resp.read().decode("utf-8"))
+                except Exception:
+                    data = {}
+
+                if status == 200:
+                    return data
+
+                err_msg = data.get("error") or data.get("detail") or f"خطا در استعلام تایید پرداخت ({status})"
+                raise CardGozarError(err_msg, status_code=status, response_data=data)
+        except urllib.error.HTTPError as exc:
+            try:
+                err_data = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                err_data = {}
+            err_msg = err_data.get("error") or err_data.get("detail") or f"خطا در استعلام ({exc.code})"
+            raise CardGozarError(err_msg, status_code=exc.code, response_data=err_data)
+        except CardGozarError:
+            raise
+        except Exception as exc:
+            logger.error("Sync connection error to CardGozar verify endpoint: %s", exc)
+            raise CardGozarError(f"خطای ارتباط در استعلام پرداخت: {exc}") from exc
+
+    def get_payment_status_sync(self, order_token: str, timeout: float = 10) -> dict[str, Any]:
+        """Queries live public status of an order synchronously with urllib.request."""
+        if not order_token:
+            raise CardGozarError("شناسه سفارش (order_token) ارائه نشده است.")
+
+        url = f"{self.base_url}/api/v1/payments/status/{order_token}/"
+        headers = self._headers(with_auth=False)
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return json.loads(resp.read().decode("utf-8"))
+                return {"is_paid": False, "status": "UNKNOWN"}
+        except Exception as exc:
+            logger.debug("Live sync status check error for %s: %s", order_token, exc)
+            return {"is_paid": False, "error": str(exc)}
 
     def verify_webhook_signature(self, raw_body: bytes, signature_header: str) -> bool:
         """Verifies the HMAC-SHA256 signature sent with CardGozar webhook.

@@ -77,6 +77,19 @@ async def _cardgozar_polling_loop(bot: Bot, db):
                         except Exception as exc:
                             logger.exception("Error checking CardGozar payment #%s in poller", p["id"])
                         await asyncio.sleep(1)
+
+                # Also fulfill any approved gateway payments that need service provisioning
+                approved_unfulfilled = await db._fetchall(
+                    "SELECT id FROM payments WHERE status = 'approved' "
+                    "AND order_id IS NULL AND (product_id IS NOT NULL OR renew_sub_id IS NOT NULL OR reseller_plan_id IS NOT NULL) "
+                    "AND payment_method = 'cardgozar' ORDER BY id ASC LIMIT 5"
+                )
+                for u_pay in approved_unfulfilled:
+                    try:
+                        logger.info("Fulfilling approved CardGozar payment #%s via poller", u_pay["id"])
+                        await fulfill_payment(bot, db, u_pay["id"])
+                    except Exception as exc:
+                        logger.exception("Error auto-fulfilling approved payment #%s in poller", u_pay["id"])
         except Exception:
             logger.exception("CardGozar polling loop failed")
 

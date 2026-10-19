@@ -1251,37 +1251,6 @@ def admin_reseller_detail(request: HttpRequest, reseller_id: int):
 
 # ── CardGozar Gateway Callback / Webhook ─────────────────────────────────────
 
-def _run_async_coro(coro):
-    import asyncio
-    import concurrent.futures
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    else:
-        return asyncio.run(coro)
-
-
-async def _async_fulfill_payment(payment_id: int):
-    from aiogram import Bot
-    from config import get_settings
-    from database import get_db
-    from services.order_fulfillment import fulfill_payment
-
-    cfg = get_settings()
-    bot = Bot(token=cfg.bot_token)
-    try:
-        db = get_db()
-        await db.init()
-        return await fulfill_payment(bot, db, payment_id)
-    finally:
-        await bot.session.close()
-
-
 def _render_safe_fallback_html(tracking_code: str = "", bot_username: str = "", is_ok: bool = True) -> str:
     bot_link = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
     status_title = "پرداخت با موفقیت انجام شد" if is_ok else "وضعیت پرداخت"
@@ -1325,15 +1294,16 @@ def _render_safe_fallback_html(tracking_code: str = "", bot_username: str = "", 
 @csrf_exempt
 def cardgozar_callback(request: HttpRequest):
     """Handles CardGozar webhook (POST) and customer redirect (GET)."""
-    import threading
-    from services.cardgozar import CardGozarClient, CardGozarError
-
-    api_key = bot_db.get_setting("cardgozar_api_key", "")
-    secret_key = bot_db.get_setting("cardgozar_secret_key", "")
-    bot_username = bot_db.get_setting("bot_username", "")
-    client = CardGozarClient(api_key=api_key, secret_key=secret_key)
-
+    bot_username = ""
     try:
+        from services.cardgozar import CardGozarClient, CardGozarError
+        from . import telegram_api
+
+        api_key = bot_db.get_setting("cardgozar_api_key", "")
+        secret_key = bot_db.get_setting("cardgozar_secret_key", "")
+        bot_username = bot_db.get_setting("bot_username", "")
+        client = CardGozarClient(api_key=api_key, secret_key=secret_key)
+
         if request.method == "POST":
             raw_body = request.body
             signature = request.META.get("HTTP_X_CARDGOZAR_SIGNATURE", "")
@@ -1351,7 +1321,7 @@ def cardgozar_callback(request: HttpRequest):
                 return JsonResponse({"error": "missing order_token"}, status=400)
 
             try:
-                verify_res = _run_async_coro(client.verify_payment(order_token))
+                verify_res = client.verify_payment_sync(order_token)
             except Exception as exc:
                 logger.error("Error verifying payment with CardGozar in webhook: %s", exc)
                 return JsonResponse({"error": "verification failed", "detail": str(exc)}, status=502)
@@ -1393,15 +1363,19 @@ def cardgozar_callback(request: HttpRequest):
                         "UPDATE users SET balance = balance + ? WHERE id = ?",
                         (payment["amount"], payment["user_id"]),
                     )
-
-                    def _bg_fulfill_webhook(pid):
+                    user_row = conn.execute("SELECT telegram_id FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
+                    if user_row and user_row[0]:
+                        msg = (
+                            f"✅ پرداخت شما در درگاه کارت‌گذر تایید شد.\n"
+                            f"💰 مبلغ: {payment['amount']:,} تومان\n"
+                        )
+                        if ref_id:
+                            msg += f"💳 کد پیگیری: {ref_id}\n"
+                        msg += "\nسفارش شما در حال پردازش خودکار است..."
                         try:
-                            _run_async_coro(_async_fulfill_payment(pid))
-                            logger.info("Fulfilled payment #%s via CardGozar webhook background task", pid)
-                        except Exception as exc:
-                            logger.exception("Error in webhook fulfillment for payment #%s: %s", pid, exc)
-
-                    threading.Thread(target=_bg_fulfill_webhook, args=(payment["id"],), daemon=True).start()
+                            telegram_api.send_message(int(user_row[0]), msg)
+                        except Exception:
+                            pass
 
             return JsonResponse({"status": "success", "ref_id": ref_id})
 
@@ -1479,7 +1453,7 @@ def cardgozar_callback(request: HttpRequest):
             token_to_verify = order_token or payment.get("gateway_order_token", "")
             if token_to_verify and api_key:
                 try:
-                    verify_res = _run_async_coro(client.verify_payment(token_to_verify))
+                    verify_res = client.verify_payment_sync(token_to_verify)
                     res_status = str(verify_res.get("status", "")).lower()
                     if (
                         verify_res.get("is_paid") is True
@@ -1491,7 +1465,7 @@ def cardgozar_callback(request: HttpRequest):
                 except Exception as exc:
                     logger.warning("verify_payment API check warning for %s: %s", token_to_verify, exc)
                     try:
-                        stat_res = _run_async_coro(client.get_payment_status(token_to_verify))
+                        stat_res = client.get_payment_status_sync(token_to_verify)
                         st_val = str(stat_res.get("status", "")).lower()
                         if stat_res.get("is_paid") is True or st_val in ("paid", "completed", "success", "ok"):
                             is_verified_paid = True
@@ -1518,15 +1492,19 @@ def cardgozar_callback(request: HttpRequest):
                             (payment["amount"], payment["user_id"]),
                         )
                         logger.info("Approved payment #%s via CardGozar redirect", payment["id"])
-
-                        def _bg_fulfill_redirect(pid):
+                        user_row = conn.execute("SELECT telegram_id FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
+                        if user_row and user_row[0]:
+                            msg = (
+                                f"✅ پرداخت شما در درگاه کارت‌گذر تایید شد.\n"
+                                f"💰 مبلغ: {payment['amount']:,} تومان\n"
+                            )
+                            if ref_id:
+                                msg += f"💳 کد پیگیری: {ref_id}\n"
+                            msg += "\nسفارش شما در حال پردازش خودکار است..."
                             try:
-                                _run_async_coro(_async_fulfill_payment(pid))
-                                logger.info("Fulfilled payment #%s via redirect background task", pid)
-                            except Exception as exc:
-                                logger.exception("Fulfillment error on redirect for payment #%s: %s", pid, exc)
-
-                        threading.Thread(target=_bg_fulfill_redirect, args=(payment["id"],), daemon=True).start()
+                                telegram_api.send_message(int(user_row[0]), msg)
+                            except Exception:
+                                pass
 
                 with bot_db.get_conn() as conn:
                     row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment["id"],)).fetchone()
@@ -1562,7 +1540,7 @@ def cardgozar_callback(request: HttpRequest):
         logger.exception("Fatal exception in cardgozar_callback: %s", fatal_exc)
         safe_html = _render_safe_fallback_html(
             tracking_code=request.GET.get("tracking_code", ""),
-            bot_username=bot_username,
+            bot_username=bot_username if "bot_username" in locals() and bot_username else "",
             is_ok=request.GET.get("status", "").strip().upper() == "OK",
         )
         return HttpResponse(safe_html, content_type="text/html; charset=utf-8")
