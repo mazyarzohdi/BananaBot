@@ -394,31 +394,7 @@ async def _scheduled_backup_loop(bot: Bot, db):
         await asyncio.sleep(BACKUP_SCHEDULE_CHECK_INTERVAL_SECONDS)
 
 
-GAME_SEASON_CHECK_INTERVAL_SECONDS = 30
 
-
-async def _game_season_settle_loop():
-    """Checks periodically if Friday night weekly game season has concluded.
-    Settles winners, sends Telegram notifications to admins, and starts 24h intermission.
-    """
-    try:
-        webapp_dir = str(Path(__file__).resolve().parent / "webapp")
-        if webapp_dir not in sys.path:
-            sys.path.insert(0, webapp_dir)
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "bananabot_web.settings")
-        import django
-        django.setup()
-        from panel import game_service
-    except Exception as exc:
-        logger.warning(f"Could not load game_service in bot loop: {exc}")
-        return
-
-    while True:
-        try:
-            await asyncio.to_thread(game_service.check_and_settle_season)
-        except Exception:
-            logger.exception("Game season settle loop failed")
-        await asyncio.sleep(GAME_SEASON_CHECK_INTERVAL_SECONDS)
 
 
 async def main():
@@ -516,7 +492,6 @@ async def main():
     asyncio.create_task(_supervised_loop("ExpiryReminder", _expiry_reminder_loop, bot, db))
     asyncio.create_task(_supervised_loop("AutoRenew", _auto_renew_loop, bot, db))
     asyncio.create_task(_supervised_loop("ScheduledBackup", _scheduled_backup_loop, bot, db))
-    asyncio.create_task(_supervised_loop("GameSeasonSettle", _game_season_settle_loop))
     await dp.start_polling(bot)
 
 
