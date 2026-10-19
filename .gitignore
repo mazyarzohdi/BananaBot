@@ -33,3 +33,4 @@ get_traceback.py
 restore_db.py
 check_logs.py
 update_env.py
+scratch/

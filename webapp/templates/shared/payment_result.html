@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#080b11"/>
+  <title>نتیجه پرداخت | BananaBot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Vazirmatn', sans-serif; }
+    body {
+      background: radial-gradient(circle at 50% 20%, #151b29 0%, #080b11 100%);
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      background: rgba(18, 24, 38, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 1.5rem;
+      padding: 2.5rem 2rem;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+      animation: popIn 0.35s ease-out;
+    }
+    @keyframes popIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .icon-badge {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+    }
+    .success-badge {
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+      border: 2px solid rgba(16, 185, 129, 0.3);
+    }
+    .pending-badge {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+      border: 2px solid rgba(245, 158, 11, 0.3);
+    }
+    .failed-badge {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 2px solid rgba(239, 68, 68, 0.3);
+    }
+    h1 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .subtitle {
+      font-size: 0.95rem;
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 1.75rem;
+    }
+    .details {
+      background: rgba(10, 14, 23, 0.6);
+      border-radius: 1rem;
+      padding: 1.25rem;
+      margin-bottom: 2rem;
+      text-align: right;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.9rem;
+    }
+    .row:last-child { border-bottom: none; }
+    .label { color: #64748b; }
+    .val { font-weight: 600; color: #e2e8f0; }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.9rem;
+      border-radius: 0.85rem;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: none;
+      margin-bottom: 0.75rem;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      color: white;
+      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+    }
+    .btn-primary:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: #cbd5e1;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  {% if payment and payment.status == 'approved' %}
+    <div class="icon-badge success-badge">
+      <i class="fa fa-check"></i>
+    </div>
+    <h1>پرداخت با موفقیت انجام شد</h1>
+    <p class="subtitle">سفارش شما به‌صورت خودکار توسط سیستم تأیید و تحویل داده شد.</p>
+
+    <div class="details">
+      <div class="row">
+        <span class="label">مبلغ پرداختی:</span>
+        <span class="val">{{ payment.amount|default:0 }} تومان</span>
+      </div>
+      {% if payment.gateway_ref_id %}
+      <div class="row">
+        <span class="label">شماره پیگیری:</span>
+        <span class="val" style="direction:ltr;">{{ payment.gateway_ref_id }}</span>
+      </div>
+      {% endif %}
+      <div class="row">
+        <span class="label">روش پرداخت:</span>
+        <span class="val">درگاه کارت‌گذر (تایید خودکار)</span>
+      </div>
+      <div class="row">
+        <span class="label">وضعیت سفارش:</span>
+        <span class="val" style="color: #10b981;">✅ تکمیل شده</span>
+      </div>
+    </div>
+  {% elif payment and payment.status == 'pending' %}
+    <div class="icon-badge pending-badge">
+      <i class="fa fa-clock"></i>
+    </div>
+    <h1>در انتظار دریافت واریزی</h1>
+    <p class="subtitle">در حال استعلام واریزی شما از بانک. در صورت انجام تراکنش، سفارش ظرف چند ثانیه تحویل می‌شود.</p>
+  {% else %}
+    <div class="icon-badge failed-badge">
+      <i class="fa fa-times"></i>
+    </div>
+    <h1>پرداخت ناموفق یا لغو شده</h1>
+    <p class="subtitle">تراکنشی برای این سفارش انجام نشد یا سفارش منقضی شده است.</p>
+  {% endif %}
+
+  {% if bot_username %}
+    <a href="https://t.me/{{ bot_username }}" class="btn btn-primary" id="btn-back-bot">
+      <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام
+    </a>
+  {% endif %}
+  <a href="/" class="btn btn-secondary">
+    <i class="fa fa-home"></i> صفحه اصلی پنل
+  </a>
+</div>
+
+<script>
+  if (window.Telegram && window.Telegram.WebApp) {
+    window.Telegram.WebApp.ready();
+    window.Telegram.WebApp.expand();
+    const btn = document.getElementById('btn-back-bot');
+    if (btn) {
+      btn.addEventListener('click', function(e) {
+        window.Telegram.WebApp.close();
+      });
+    }
+  }
+</script>
+
+</body>
+</html>

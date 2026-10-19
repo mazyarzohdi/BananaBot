@@ -244,13 +244,14 @@ def renew_confirm_inline(sub_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def insufficient_balance_renew_inline(sub_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 پرداخت کارت به کارت", callback_data=f"card_topup_renew:{sub_id}")],
-            [InlineKeyboardButton(text=t("cancel"), callback_data="cancel")],
-        ]
-    )
+def insufficient_balance_renew_inline(sub_id: int, mode: str = "cardgozar") -> InlineKeyboardMarkup:
+    rows = []
+    if mode in ("cardgozar", "both"):
+        rows.append([InlineKeyboardButton(text="🚀 پرداخت آنلاین با کارت‌گذر (تایید آنی)", callback_data=f"cg_renew:{sub_id}")])
+    if mode in ("card", "both"):
+        rows.append([InlineKeyboardButton(text="💳 کارت به کارت معمولی (ارسال فیش)", callback_data=f"card_topup_renew:{sub_id}")])
+    rows.append([InlineKeyboardButton(text=t("cancel"), callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def renew_complete_inline(sub_id: int) -> InlineKeyboardMarkup:
@@ -261,11 +262,48 @@ def renew_complete_inline(sub_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def insufficient_balance_inline(product_id: int) -> InlineKeyboardMarkup:
+def reseller_complete_inline(plan_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💳 پرداخت کارت به کارت", callback_data=f"card_topup:{product_id}")],
-            [InlineKeyboardButton(text=t("cancel"), callback_data="cancel")],
+            [InlineKeyboardButton(text="🤝 تکمیل فعال‌سازی نمایندگی", callback_data=f"res_buy_plan:{plan_id}")],
+        ]
+    )
+
+
+def insufficient_balance_inline(product_id: int, mode: str = "cardgozar") -> InlineKeyboardMarkup:
+    rows = []
+    if mode in ("cardgozar", "both"):
+        rows.append([InlineKeyboardButton(text="🚀 پرداخت آنلاین با کارت‌گذر (تایید آنی)", callback_data=f"cg_buy:{product_id}")])
+    if mode in ("card", "both"):
+        rows.append([InlineKeyboardButton(text="💳 کارت به کارت معمولی (ارسال فیش)", callback_data=f"card_topup:{product_id}")])
+    rows.append([InlineKeyboardButton(text=t("cancel"), callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cardgozar_invoice_inline(payment_url: str, payment_id: int) -> InlineKeyboardMarkup:
+    """کیبورد اختصاصی فاکتور کارت‌گذر با دکمه ورود به درگاه و دکمه استعلام و تایید در ربات."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 ورود به درگاه پرداخت کارت‌گذر", url=payment_url)],
+            [InlineKeyboardButton(text="🔄 بررسی و تایید پرداخت", callback_data=f"cg_verify:{payment_id}")],
+            [InlineKeyboardButton(text="❌ انصراف از پرداخت", callback_data=f"cg_cancel:{payment_id}")],
+        ]
+    )
+
+
+def payment_method_choice_inline(action_type: str, target_id: int, amount: int) -> InlineKeyboardMarkup:
+    """انتخاب بین درگاه کارت‌گذر و کارت‌به‌کارت دستی هنگامی که هر دو روش فعال هستند."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🚀 درگاه پرداخت کارت‌گذر (تایید آنی)",
+                callback_data=f"choose_pm:cardgozar:{action_type}:{target_id}:{amount}"
+            )],
+            [InlineKeyboardButton(
+                text="💳 کارت به کارت دستی (ارسال فیش)",
+                callback_data=f"choose_pm:card:{action_type}:{target_id}:{amount}"
+            )],
+            [InlineKeyboardButton(text="❌ انصراف", callback_data="cancel")],
         ]
     )
 
@@ -590,13 +628,14 @@ def reseller_complete_inline(plan_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def reseller_insufficient_balance_inline(plan_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 پرداخت کارت به کارت", callback_data=f"res_topup:{plan_id}")],
-            [InlineKeyboardButton(text=t("cancel"), callback_data="cancel")],
-        ]
-    )
+def reseller_insufficient_balance_inline(plan_id: int, mode: str = "cardgozar") -> InlineKeyboardMarkup:
+    rows = []
+    if mode in ("cardgozar", "both"):
+        rows.append([InlineKeyboardButton(text="🚀 پرداخت آنلاین با کارت‌گذر (تایید آنی)", callback_data=f"cg_reseller:{plan_id}")])
+    if mode in ("card", "both"):
+        rows.append([InlineKeyboardButton(text="💳 کارت به کارت معمولی (ارسال فیش)", callback_data=f"res_topup:{plan_id}")])
+    rows.append([InlineKeyboardButton(text=t("cancel"), callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reseller_status_inline(panel_url: str, expired_or_disabled: bool) -> InlineKeyboardMarkup:
@@ -839,3 +878,49 @@ def admin_ticket_notify_inline(ticket_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✍️ ارسال پاسخ", callback_data=f"aticket_reply:{ticket_id}")],
         [InlineKeyboardButton(text="👁 مشاهده تیکت", callback_data=f"aticket_view:{ticket_id}")],
     ])
+
+
+def admin_payment_gateways_inline(
+    current_mode: str,
+    cg_enabled: bool,
+    has_api_key: bool,
+    has_secret: bool,
+) -> InlineKeyboardMarkup:
+    mode_names = {
+        "cardgozar": "🚀 فقط درگاه کارت‌گذر",
+        "card": "💳 فقط کارت‌به‌کارت دستی",
+        "both": "🔄 هر دو روش (انتخاب کاربر)",
+    }
+    mode_label = mode_names.get(current_mode, current_mode)
+    cg_icon = "🟢" if cg_enabled else "🔴"
+    cg_status = "فعال" if cg_enabled else "غیرفعال"
+    api_key_status = "✅ تنظیم شده" if has_api_key else "❌ تنظیم نشده"
+    secret_status = "✅ تنظیم شده" if has_secret else "❌ تنظیم نشده"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"⚙️ روش پرداخت: {mode_label}", callback_data="cfg_pg_switch_mode")],
+            [InlineKeyboardButton(text=f"{cg_icon} وضعیت کارت‌گذر: {cg_status}", callback_data="cfg_pg_toggle_cg")],
+            [InlineKeyboardButton(text=f"🔑 کلید API کارت‌گذر ({api_key_status})", callback_data="cfg_edit:cardgozar_api_key")],
+            [InlineKeyboardButton(text=f"🔐 کلید Secret کارت‌گذر ({secret_status})", callback_data="cfg_edit:cardgozar_secret_key")],
+            [InlineKeyboardButton(text="🌐 آدرس بازگشت / وبهوک (Callback)", callback_data="cfg_edit:cardgozar_callback_url")],
+            [InlineKeyboardButton(text="🩺 تست اتصال به درگاه کارت‌گذر", callback_data="cfg_pg_test_cg")],
+            [InlineKeyboardButton(text="💳 تنظیم کارت دستی و صاحب حساب", callback_data="cfg_pg_card_info")],
+            [InlineKeyboardButton(text="🔙 بازگشت به تنظیمات ربات", callback_data="cfg_back")],
+        ]
+    )
+
+
+def admin_payment_mode_switch_inline(current_mode: str) -> InlineKeyboardMarkup:
+    modes = [
+        ("cardgozar", "🚀 فقط درگاه کارت‌گذر (تایید خودکار)"),
+        ("card", "💳 فقط کارت به کارت دستی (ارسال فیش)"),
+        ("both", "🔄 هر دو روش (انتخاب با مشتری)"),
+    ]
+    rows = []
+    for m, label in modes:
+        prefix = "✅ " if m == current_mode else "▫️ "
+        rows.append([InlineKeyboardButton(text=f"{prefix}{label}", callback_data=f"cfg_pg_set_mode:{m}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به مدیریت درگاه‌ها", callback_data="cfg_pg_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+

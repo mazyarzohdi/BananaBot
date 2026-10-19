@@ -19,6 +19,8 @@ from bot.handlers import admin_router, user_router
 from bot.middlewares import UserMiddleware
 from config import get_settings
 from database import get_db
+from services.cardgozar import CardGozarClient, CardGozarError
+from services.order_fulfillment import fulfill_payment
 from services.subscription import SubscriptionService
 from utils.helpers import format_expiry
 
@@ -30,6 +32,55 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PAYMENT_EXPIRY_CHECK_INTERVAL_SECONDS = 60
+CARDGOZAR_POLL_INTERVAL_SECONDS = 20
+
+
+async def _cardgozar_polling_loop(bot: Bot, db):
+    """Periodically queries CardGozar API for any pending payments.
+    Ensures that if the user pays and closes the browser/Telegram without
+    clicking 'بررسی و تایید' or if the webhook was unreachable, their order
+    is still automatically verified and delivered within ~20 seconds."""
+    while True:
+        try:
+            cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+            api_key = await db.get_setting("cardgozar_api_key", "")
+            secret_key = await db.get_setting("cardgozar_secret_key", "")
+
+            if cg_enabled and api_key:
+                pending_payments = await db.get_pending_gateway_payments("cardgozar")
+                if pending_payments:
+                    client = CardGozarClient(api_key=api_key, secret_key=secret_key)
+                    for p in pending_payments:
+                        order_token = p.get("gateway_order_token")
+                        if not order_token:
+                            continue
+                        try:
+                            verify_data = await client.verify_payment(order_token)
+                            is_paid = (
+                                verify_data.get("is_paid") is True
+                                or verify_data.get("status") in ("paid", "completed", "success")
+                            )
+                            if is_paid:
+                                ref_id = str(verify_data.get("ref_id") or verify_data.get("tracking_code") or "")
+                                payer_card = str(verify_data.get("payer_card") or "")
+                                approved = await db.approve_gateway_payment(
+                                    payment_id=p["id"],
+                                    ref_id=ref_id,
+                                    payer_card=payer_card,
+                                    gateway_name="کارت‌گذر",
+                                )
+                                if approved:
+                                    logger.info("CardGozar poller confirmed payment #%s (ref: %s)", p["id"], ref_id)
+                                    await fulfill_payment(bot, db, p["id"])
+                        except CardGozarError as exc:
+                            logger.debug("CardGozar polling verify check for #%s: %s", p["id"], exc)
+                        except Exception as exc:
+                            logger.exception("Error checking CardGozar payment #%s in poller", p["id"])
+                        await asyncio.sleep(1)
+        except Exception:
+            logger.exception("CardGozar polling loop failed")
+
+        await asyncio.sleep(CARDGOZAR_POLL_INTERVAL_SECONDS)
 
 
 async def _expire_payments_loop(bot: Bot, db):
@@ -412,6 +463,7 @@ async def main():
         )
 
     logger.info("Bot starting...")
+    asyncio.create_task(_cardgozar_polling_loop(bot, db))
     asyncio.create_task(_expire_payments_loop(bot, db))
     asyncio.create_task(_expiry_reminder_loop(bot, db))
     asyncio.create_task(_auto_renew_loop(bot, db))

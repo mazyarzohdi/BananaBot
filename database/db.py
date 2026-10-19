@@ -555,14 +555,77 @@ class Database:
         product_id: int | None = None, renew_sub_id: int | None = None,
         expected_amount: int | None = None, expires_at: str | None = None,
         reseller_plan_id: int | None = None,
+        gateway_order_token: str | None = None,
+        gateway_tracking_code: str | None = None,
+        gateway_payment_url: str | None = None,
+        gateway_ref_id: str | None = None,
+        gateway_payer_card: str | None = None,
     ) -> int:
         return await self._execute(
             "INSERT INTO payments (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, "
-            "amount, payment_method, receipt_file_id, expected_amount, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "amount, payment_method, receipt_file_id, expected_amount, expires_at, "
+            "gateway_order_token, gateway_tracking_code, gateway_payment_url, gateway_ref_id, gateway_payer_card) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, order_id, product_id, renew_sub_id, reseller_plan_id, amount, payment_method,
-             receipt_file_id, expected_amount, expires_at),
+             receipt_file_id, expected_amount, expires_at,
+             gateway_order_token, gateway_tracking_code, gateway_payment_url, gateway_ref_id, gateway_payer_card),
         )
+
+    async def get_payment_by_order_token(self, order_token: str) -> dict | None:
+        """Finds a payment record by its gateway order token."""
+        return await self._fetchone(
+            "SELECT py.*, u.telegram_id, u.username FROM payments py "
+            "JOIN users u ON py.user_id = u.id "
+            "WHERE py.gateway_order_token = ? ORDER BY py.id DESC LIMIT 1",
+            (order_token,),
+        )
+
+    async def get_pending_gateway_payments(self, gateway: str = "cardgozar") -> list[dict]:
+        """Returns all pending payments for a specific gateway that haven't expired."""
+        return await self._fetchall(
+            "SELECT py.*, u.telegram_id FROM payments py JOIN users u ON py.user_id = u.id "
+            "WHERE py.payment_method = ? AND py.status = 'pending' "
+            "AND (py.expires_at IS NULL OR py.expires_at > datetime('now')) "
+            "ORDER BY py.id DESC",
+            (gateway,),
+        )
+
+    async def approve_gateway_payment(
+        self, payment_id: int, ref_id: str = "", payer_card: str = "", gateway_name: str = "کارت‌گذر"
+    ) -> dict | None:
+        """Atomically approves a pending gateway payment and credits user balance.
+        Safe against concurrent webhook, polling, and button checks."""
+        conn = await self.connect()
+        try:
+            await conn.execute("BEGIN EXCLUSIVE")
+            admin_note = f"تایید خودکار درگاه {gateway_name}"
+            if ref_id:
+                admin_note += f" (پیگیری: {ref_id})"
+            cursor = await conn.execute(
+                "UPDATE payments SET status = 'approved', admin_note = ?, "
+                "gateway_ref_id = COALESCE(?, gateway_ref_id), "
+                "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                "WHERE id = ? AND status = 'pending'",
+                (admin_note, ref_id or None, payer_card or None, payment_id),
+            )
+            if cursor.rowcount == 0:
+                await conn.commit()
+                return None
+
+            fetch_cursor = await conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))
+            payment_row = await fetch_cursor.fetchone()
+            payment = dict(payment_row)
+            await conn.execute(
+                "UPDATE users SET balance = balance + ? WHERE id = ?",
+                (payment["amount"], payment["user_id"]),
+            )
+            await conn.commit()
+            return payment
+        except Exception:
+            await conn.rollback()
+            raise
+        finally:
+            await conn.close()
 
     async def expected_amount_taken(self, expected_amount: int) -> bool:
         """Used while generating the random 3-digit verification code, to

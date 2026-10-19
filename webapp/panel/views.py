@@ -1247,3 +1247,168 @@ def admin_reseller_detail(request: HttpRequest, reseller_id: int):
         "expires_at_text": _format_ts(reseller["expires_at"]),
         "is_admin": True,
     })
+
+
+# ── CardGozar Gateway Callback / Webhook ─────────────────────────────────────
+
+def _run_async_coro(coro):
+    import asyncio
+    import concurrent.futures
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
+async def _async_fulfill_payment(payment_id: int):
+    from aiogram import Bot
+    from config import get_settings
+    from database import get_db
+    from services.order_fulfillment import fulfill_payment
+
+    cfg = get_settings()
+    bot = Bot(token=cfg.bot_token)
+    try:
+        db = get_db()
+        await db.init()
+        return await fulfill_payment(bot, db, payment_id)
+    finally:
+        await bot.session.close()
+
+
+@csrf_exempt
+def cardgozar_callback(request: HttpRequest):
+    """Handles CardGozar webhook (POST) and customer redirect (GET)."""
+    from services.cardgozar import CardGozarClient, CardGozarError
+
+    api_key = bot_db.get_setting("cardgozar_api_key", "")
+    secret_key = bot_db.get_setting("cardgozar_secret_key", "")
+    bot_username = bot_db.get_setting("bot_username", "")
+    client = CardGozarClient(api_key=api_key, secret_key=secret_key)
+
+    if request.method == "POST":
+        raw_body = request.body
+        signature = request.META.get("HTTP_X_CARDGOZAR_SIGNATURE", "")
+        if secret_key and not client.verify_webhook_signature(raw_body, signature):
+            logger.warning("CardGozar webhook signature mismatch.")
+            return JsonResponse({"error": "invalid signature"}, status=403)
+
+        try:
+            data = json.loads(raw_body.decode("utf-8") or "{}")
+        except Exception:
+            return JsonResponse({"error": "invalid json"}, status=400)
+
+        order_token = data.get("order_token")
+        if not order_token:
+            return JsonResponse({"error": "missing order_token"}, status=400)
+
+        try:
+            verify_res = _run_async_coro(client.verify_payment(order_token))
+        except Exception as exc:
+            logger.error("Error verifying payment with CardGozar in webhook: %s", exc)
+            return JsonResponse({"error": "verification failed", "detail": str(exc)}, status=502)
+
+        is_paid = (
+            verify_res.get("is_paid") is True
+            or verify_res.get("status") in ("paid", "completed", "success")
+        )
+
+        if not is_paid:
+            return JsonResponse({"status": "not_paid"})
+
+        ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or "")
+        payer_card = str(verify_res.get("payer_card") or "")
+
+        with bot_db.get_conn() as conn:
+            cur = conn.execute(
+                "SELECT * FROM payments WHERE gateway_order_token = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+                (order_token,),
+            )
+            payment_row = cur.fetchone()
+            if not payment_row:
+                return JsonResponse({"status": "already_processed_or_not_found"})
+
+            payment = dict(payment_row)
+            admin_note = "تایید خودکار درگاه کارت‌گذر"
+            if ref_id:
+                admin_note += f" (پیگیری: {ref_id})"
+
+            cur_upd = conn.execute(
+                "UPDATE payments SET status = 'approved', admin_note = ?, "
+                "gateway_ref_id = COALESCE(?, gateway_ref_id), "
+                "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                "WHERE id = ? AND status = 'pending'",
+                (admin_note, ref_id or None, payer_card or None, payment["id"]),
+            )
+            if cur_upd.rowcount > 0:
+                conn.execute(
+                    "UPDATE users SET balance = balance + ? WHERE id = ?",
+                    (payment["amount"], payment["user_id"]),
+                )
+                try:
+                    _run_async_coro(_async_fulfill_payment(payment["id"]))
+                    logger.info("Fulfilled payment #%s via CardGozar webhook", payment["id"])
+                except Exception as exc:
+                    logger.exception("Error in webhook fulfillment for payment #%s", payment["id"])
+
+        return JsonResponse({"status": "success", "ref_id": ref_id})
+
+    # GET: Customer redirected to site after payment
+    order_token = request.GET.get("order_token", "").strip()
+    payment = None
+    if order_token:
+        with bot_db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM payments WHERE gateway_order_token = ? ORDER BY id DESC LIMIT 1",
+                (order_token,),
+            ).fetchone()
+            if row:
+                payment = dict(row)
+
+        if payment and payment["status"] == "pending":
+            try:
+                verify_res = _run_async_coro(client.verify_payment(order_token))
+                is_paid = (
+                    verify_res.get("is_paid") is True
+                    or verify_res.get("status") in ("paid", "completed", "success")
+                )
+                if is_paid:
+                    ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or "")
+                    payer_card = str(verify_res.get("payer_card") or "")
+                    with bot_db.get_conn() as conn:
+                        admin_note = "تایید خودکار درگاه کارت‌گذر (بازگشت کاربر)"
+                        cur_upd = conn.execute(
+                            "UPDATE payments SET status = 'approved', admin_note = ?, "
+                            "gateway_ref_id = COALESCE(?, gateway_ref_id), "
+                            "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                            "WHERE id = ? AND status = 'pending'",
+                            (admin_note, ref_id or None, payer_card or None, payment["id"]),
+                        )
+                        if cur_upd.rowcount > 0:
+                            conn.execute(
+                                "UPDATE users SET balance = balance + ? WHERE id = ?",
+                                (payment["amount"], payment["user_id"]),
+                            )
+                            try:
+                                _run_async_coro(_async_fulfill_payment(payment["id"]))
+                            except Exception as exc:
+                                logger.exception("Fulfillment error on redirect: %s", exc)
+
+                    with bot_db.get_conn() as conn:
+                        row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment["id"],)).fetchone()
+                        if row:
+                            payment = dict(row)
+            except Exception as exc:
+                logger.warning("Could not verify order %s on redirect: %s", order_token, exc)
+
+    return render(request, "shared/payment_result.html", {
+        "payment": payment,
+        "bot_username": bot_username,
+        "order_token": order_token,
+    })

@@ -17,6 +17,7 @@ from bot.keyboards import (
     auto_payment_copy_inline,
     balance_inline,
     cancel_kb,
+    cardgozar_invoice_inline,
     channel_required_inline,
     confirm_buy_inline,
     faq_inline,
@@ -25,6 +26,7 @@ from bot.keyboards import (
     main_menu,
     panels_buy_inline,
     payment_actions_inline,
+    payment_method_choice_inline,
     products_by_panel_inline,
     renew_confirm_inline,
     reseller_confirm_inline,
@@ -41,6 +43,8 @@ from bot.keyboards import (
 from bot.messages import t
 from config import get_settings
 from database import get_db
+from services.cardgozar import CardGozarClient, CardGozarError
+from services.order_fulfillment import fulfill_payment
 from services.subscription import SubscriptionService
 from utils.helpers import format_expiry, load_config_links, parse_positive_int
 
@@ -182,6 +186,127 @@ async def _send_card_payment_instructions(
             "می‌شود و می‌توانید همان خرید را تکمیل کنید.",
             reply_markup=cancel_kb(),
         )
+    return payment_id
+
+
+async def _get_payment_mode(db) -> str:
+    """Returns the effective active payment method mode: 'cardgozar', 'card', or 'both'."""
+    mode = await db.get_setting("payment_method_mode", "cardgozar")
+    cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+    cg_api_key = await db.get_setting("cardgozar_api_key", "")
+    has_cg = cg_enabled and bool(cg_api_key.strip())
+
+    if mode == "cardgozar":
+        if not has_cg:
+            return "card"
+        return "cardgozar"
+    elif mode == "both":
+        if not has_cg:
+            return "card"
+        return "both"
+    else:
+        return "card"
+
+
+async def _initiate_cardgozar_payment(
+    answer,
+    db,
+    user_id: int,
+    amount_toman: int,
+    *,
+    product_id: int | None = None,
+    renew_sub_id: int | None = None,
+    reseller_plan_id: int | None = None,
+    coupon_code: str | None = None,
+    discount_amount: int = 0,
+) -> int | None:
+    """Creates a payment on CardGozar API and sends the invoice to the user."""
+    api_key = await db.get_setting("cardgozar_api_key", "")
+    secret_key = await db.get_setting("cardgozar_secret_key", "")
+    cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+
+    if not cg_enabled or not api_key:
+        await answer(t("cardgozar_not_configured"))
+        return None
+
+    # Resolve item description
+    item_name = "افزایش موجودی کیف پول"
+    if product_id:
+        prod = await db.get_product(product_id)
+        if prod:
+            item_name = f"خرید سرویس {prod['name']}"
+    elif renew_sub_id:
+        item_name = f"تمدید سرویس #{renew_sub_id}"
+    elif reseller_plan_id:
+        plan = await db.get_reseller_plan(reseller_plan_id)
+        if plan:
+            item_name = f"خرید/تمدید نمایندگی {plan['name']}"
+
+    callback_url = await db.get_setting("cardgozar_callback_url", "")
+    if not callback_url:
+        panel_url = (get_settings().panel_url or "").rstrip("/")
+        if panel_url:
+            callback_url = f"{panel_url}/api/payments/cardgozar/callback/"
+
+    client = CardGozarClient(api_key=api_key, secret_key=secret_key)
+    try:
+        res = await client.create_payment(
+            amount_toman=amount_toman,
+            description=item_name,
+            callback_url=callback_url or None,
+        )
+    except CardGozarError as exc:
+        logger.error("CardGozar creation error for user %s: %s", user_id, exc)
+        await answer(f"❌ خطا در ایجاد سفارش درگاه پرداخت کارت‌گذر:\n{exc}")
+        return None
+    except Exception as exc:
+        logger.exception("Unexpected error initiating CardGozar payment")
+        await answer(f"❌ خطا در اتصال به درگاه پرداخت: {exc}")
+        return None
+
+    order_token = res.get("order_token")
+    payment_url = res.get("payment_url")
+    final_amount_rial = int(res.get("final_amount") or (amount_toman * 10))
+    final_amount_toman = final_amount_rial // 10
+    expires_in_secs = int(res.get("expires_in") or 1800)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in_secs)
+    expires_at_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+
+    payment_id = await db.create_payment(
+        user_id=user_id,
+        amount=amount_toman,
+        payment_method="cardgozar",
+        product_id=product_id,
+        renew_sub_id=renew_sub_id,
+        reseller_plan_id=reseller_plan_id,
+        expires_at=expires_at_str,
+        gateway_order_token=order_token,
+        gateway_tracking_code=str(final_amount_rial)[-4:],
+        gateway_payment_url=payment_url,
+    )
+
+    if coupon_code and discount_amount:
+        await db._execute(
+            "UPDATE payments SET coupon_code = ?, discount_amount = ? WHERE id = ?",
+            (coupon_code, discount_amount, payment_id),
+        )
+
+    invoice_text = t(
+        "cardgozar_invoice",
+        item_name=item_name,
+        base_amount=amount_toman,
+        final_amount_toman=final_amount_toman,
+        final_amount_rial=final_amount_rial,
+        tracking_code=str(final_amount_rial)[-4:],
+        expiry_minutes=expires_in_secs // 60,
+    )
+
+    await answer(
+        invoice_text,
+        reply_markup=cardgozar_invoice_inline(payment_url, payment_id),
+        parse_mode="HTML",
+    )
+    await answer("برای انصراف از این پرداخت:", reply_markup=cancel_kb())
     return payment_id
 
 
@@ -550,6 +675,7 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
             fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
             current_balance = fresh_user["balance"] if fresh_user else 0
             deficit = max(0, final_price - current_balance)
+            mode = await _get_payment_mode(db)
             await callback.message.edit_text(
                 t(
                     "insufficient_balance",
@@ -557,7 +683,7 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
                     price=final_price,
                     deficit=deficit,
                 ),
-                reply_markup=insufficient_balance_inline(product_id),
+                reply_markup=insufficient_balance_inline(product_id, mode=mode),
             )
             await callback.answer()
             return
@@ -647,6 +773,39 @@ async def card_topup_start(callback: CallbackQuery, db_user: dict, state: FSMCon
         )
 
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cg_buy:"))
+async def cardgozar_buy_start(callback: CallbackQuery, db_user: dict, state: FSMContext):
+    product_id = int(callback.data.split(":")[1])
+    db = get_db()
+    product = await db.get_product(product_id)
+    if not product:
+        await callback.answer("محصول پیدا نشد", show_alert=True)
+        return
+
+    fsm_data = await state.get_data()
+    coupon_code = fsm_data.get("coupon_code")
+    discount_amount = int(fsm_data.get("discount_amount", 0))
+    final_price = max(0, product["price"] - discount_amount)
+
+    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
+    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    deficit = final_price - balance
+    if deficit <= 0:
+        await callback.answer("موجودی شما کافی است، روی دکمه تأیید خرید بزنید.", show_alert=True)
+        return
+
+    await callback.answer("⏳ در حال ایجاد فاکتور درگاه کارت‌گذر...")
+    await _initiate_cardgozar_payment(
+        callback.message.answer,
+        db,
+        db_user["id"],
+        deficit,
+        product_id=product_id,
+        coupon_code=coupon_code,
+        discount_amount=discount_amount,
+    )
 
 
 @router.callback_query(F.data == "cancel")
@@ -992,9 +1151,10 @@ async def renew_service_execute(callback: CallbackQuery, db_user: dict):
             fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
             current_balance = fresh_user["balance"] if fresh_user else 0
             deficit = max(0, price - current_balance)
+            mode = await _get_payment_mode(db)
             await callback.message.edit_text(
                 t("insufficient_balance", balance=current_balance, price=price, deficit=deficit),
-                reply_markup=insufficient_balance_renew_inline(sub_id),
+                reply_markup=insufficient_balance_renew_inline(sub_id, mode=mode),
             )
             await callback.answer()
             return
@@ -1062,6 +1222,36 @@ async def card_topup_renew_start(callback: CallbackQuery, db_user: dict):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("cg_renew:"))
+async def cardgozar_renew_start(callback: CallbackQuery, db_user: dict):
+    sub_id = int(callback.data.split(":")[1])
+    db = get_db()
+    sub = await db.get_subscription(sub_id)
+    if not sub or sub["user_id"] != db_user["id"]:
+        await callback.answer("سرویس پیدا نشد", show_alert=True)
+        return
+    product = await db.get_product(sub["product_id"]) if sub.get("product_id") else None
+    if not product:
+        await callback.answer("❌ این سرویس قابل تمدید نیست.", show_alert=True)
+        return
+
+    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
+    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    deficit = product["price"] - balance
+    if deficit <= 0:
+        await callback.answer("موجودی شما کافی است، دوباره روی تأیید تمدید بزنید.", show_alert=True)
+        return
+
+    await callback.answer("⏳ در حال ایجاد فاکتور درگاه کارت‌گذر...")
+    await _initiate_cardgozar_payment(
+        callback.message.answer,
+        db,
+        db_user["id"],
+        deficit,
+        renew_sub_id=sub_id,
+    )
+
+
 @router.callback_query(F.data.startswith("usage:"))
 async def show_usage(callback: CallbackQuery, db_user: dict):
     sub_id = int(callback.data.split(":")[1])
@@ -1124,15 +1314,29 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
         await message.answer(t("invalid_amount"))
         return
 
-    settings = get_settings()
-    card = settings.card_number or await db.get_setting("card_number", "")
-    if not card:
-        await message.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.")
-        await state.clear()
-        return
+    mode = await _get_payment_mode(db)
 
-    await state.clear()
-    await _send_card_payment_instructions(message.answer, db, db_user["id"], amount)
+    if mode == "cardgozar":
+        await state.clear()
+        await _initiate_cardgozar_payment(message.answer, db, db_user["id"], amount)
+    elif mode == "both":
+        await state.clear()
+        await message.answer(
+            f"💰 مبلغ درخواستی برای افزایش موجودی: <b>{amount:,} تومان</b>\n\n"
+            "لطفاً روش پرداخت مورد نظر خود را انتخاب کنید:",
+            reply_markup=payment_method_choice_inline("deposit", 0, amount),
+            parse_mode="HTML",
+        )
+    else:  # mode == "card"
+        settings = get_settings()
+        card = settings.card_number or await db.get_setting("card_number", "")
+        if not card:
+            await message.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.")
+            await state.clear()
+            return
+
+        await state.clear()
+        await _send_card_payment_instructions(message.answer, db, db_user["id"], amount)
 
 
 @router.message(F.photo)
@@ -1341,10 +1545,11 @@ async def reseller_confirm(callback: CallbackQuery, db_user: dict):
             fresh_user = await db._fetchone("SELECT balance FROM users WHERE id = ?", (db_user["id"],))
             current_balance = fresh_user["balance"] if fresh_user else 0
             deficit = max(0, price - current_balance)
+            mode = await _get_payment_mode(db)
             await callback.message.edit_text(
                 f"❌ موجودی کیف پول کافی نیست.\nموجودی شما: {current_balance:,} تومان\n"
                 f"مبلغ مورد نیاز: {price:,} تومان\nمبلغ کسری: {deficit:,} تومان",
-                reply_markup=reseller_insufficient_balance_inline(plan_id),
+                reply_markup=reseller_insufficient_balance_inline(plan_id, mode=mode),
             )
             await callback.answer()
             return
@@ -1399,6 +1604,192 @@ async def reseller_card_topup_start(callback: CallbackQuery, db_user: dict):
         callback.message.answer, db, db_user["id"], deficit, reseller_plan_id=plan_id,
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cg_reseller:"))
+async def cardgozar_reseller_start(callback: CallbackQuery, db_user: dict):
+    plan_id = int(callback.data.split(":")[1])
+    db = get_db()
+    plan = await db.get_reseller_plan(plan_id)
+    if not plan:
+        await callback.answer("پلن پیدا نشد", show_alert=True)
+        return
+
+    fresh_user = await db._fetchone("SELECT * FROM users WHERE id = ?", (db_user["id"],))
+    balance = fresh_user["balance"] if fresh_user else db_user["balance"]
+    deficit = plan["price"] - balance
+    if deficit <= 0:
+        await callback.answer("موجودی شما کافی است، دوباره روی تأیید بزنید.", show_alert=True)
+        return
+
+    await callback.answer("⏳ در حال ایجاد فاکتور درگاه کارت‌گذر...")
+    await _initiate_cardgozar_payment(
+        callback.message.answer,
+        db,
+        db_user["id"],
+        deficit,
+        reseller_plan_id=plan_id,
+    )
+
+
+@router.callback_query(F.data.startswith("choose_pm:"))
+async def choose_payment_method(callback: CallbackQuery, db_user: dict, state: FSMContext):
+    parts = callback.data.split(":")
+    # choose_pm:{method}:{action_type}:{target_id}:{amount}
+    if len(parts) < 5:
+        await callback.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+
+    method = parts[1]
+    action_type = parts[2]
+    target_id = int(parts[3])
+    amount = int(parts[4])
+
+    db = get_db()
+    await callback.answer()
+
+    if method == "cardgozar":
+        kwargs = {}
+        if action_type == "buy" and target_id:
+            kwargs["product_id"] = target_id
+            fsm_data = await state.get_data()
+            if fsm_data.get("coupon_code"):
+                kwargs["coupon_code"] = fsm_data.get("coupon_code")
+                kwargs["discount_amount"] = int(fsm_data.get("discount_amount", 0))
+        elif action_type == "renew" and target_id:
+            kwargs["renew_sub_id"] = target_id
+        elif action_type == "reseller" and target_id:
+            kwargs["reseller_plan_id"] = target_id
+
+        await _initiate_cardgozar_payment(
+            callback.message.answer,
+            db,
+            db_user["id"],
+            amount,
+            **kwargs,
+        )
+    else:
+        # manual card
+        kwargs = {}
+        if action_type == "buy" and target_id:
+            kwargs["product_id"] = target_id
+        elif action_type == "renew" and target_id:
+            kwargs["renew_sub_id"] = target_id
+        elif action_type == "reseller" and target_id:
+            kwargs["reseller_plan_id"] = target_id
+
+        await _send_card_payment_instructions(
+            callback.message.answer,
+            db,
+            db_user["id"],
+            amount,
+            **kwargs,
+        )
+
+
+@router.callback_query(F.data.startswith("cg_verify:"))
+async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
+    payment_id = int(callback.data.split(":")[1])
+    db = get_db()
+    payment = await db.get_payment(payment_id)
+    if not payment or payment["user_id"] != db_user["id"]:
+        await callback.answer("پرداخت پیدا نشد.", show_alert=True)
+        return
+
+    if payment["status"] == "approved":
+        await callback.answer("✅ این پرداخت قبلاً با موفقیت تأیید شده است.", show_alert=True)
+        try:
+            await callback.message.edit_text("✅ پرداخت قبلاً با موفقیت تأیید و اعمال شده است.")
+        except Exception:
+            pass
+        return
+
+    if payment["status"] in ("cancelled", "rejected"):
+        await callback.answer("❌ این پرداخت لغو شده است.", show_alert=True)
+        return
+
+    order_token = payment.get("gateway_order_token")
+    if not order_token:
+        await callback.answer("❌ شناسه درگاه یافت نشد.", show_alert=True)
+        return
+
+    api_key = await db.get_setting("cardgozar_api_key", "")
+    secret_key = await db.get_setting("cardgozar_secret_key", "")
+    client = CardGozarClient(api_key=api_key, secret_key=secret_key)
+
+    await callback.answer("⏳ در حال استعلام پرداخت از درگاه کارت‌گذر...")
+    try:
+        verify_data = await client.verify_payment(order_token)
+    except CardGozarError as exc:
+        logger.warning("CardGozar verify error for payment #%s: %s", payment_id, exc)
+        await callback.answer(t("cardgozar_pending_verification"), show_alert=True)
+        return
+    except Exception as exc:
+        logger.exception("Unexpected error during CardGozar verify for #%s", payment_id)
+        await callback.answer(f"❌ خطا در استعلام از درگاه: {exc}", show_alert=True)
+        return
+
+    is_paid = (
+        verify_data.get("is_paid") is True
+        or verify_data.get("status") in ("paid", "completed", "success")
+    )
+    if not is_paid:
+        await callback.answer(t("cardgozar_pending_verification"), show_alert=True)
+        return
+
+    ref_id = str(verify_data.get("ref_id") or verify_data.get("tracking_code") or "")
+    payer_card = str(verify_data.get("payer_card") or "")
+
+    approved_payment = await db.approve_gateway_payment(
+        payment_id=payment_id,
+        ref_id=ref_id,
+        payer_card=payer_card,
+        gateway_name="کارت‌گذر",
+    )
+
+    if approved_payment:
+        # Fulfill order
+        await fulfill_payment(callback.bot, db, payment_id)
+        try:
+            await callback.message.edit_text(
+                f"✅ <b>پرداخت شما با موفقیت تأیید شد!</b>\n\n"
+                f"💰 مبلغ: {payment['amount']:,} تومان\n"
+                f"💳 کد پیگیری بانکی: <code>{ref_id or '—'}</code>\n\n"
+                f"سفارش شما تحویل داده شد.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await callback.answer("✅ پرداخت شما تأیید شد!", show_alert=True)
+    else:
+        await callback.answer("✅ این پرداخت تأیید و سفارش شما قبلاً تحویل داده شده است.", show_alert=True)
+        try:
+            await callback.message.edit_text("✅ پرداخت قبلاً تأیید شده است.")
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("cg_cancel:"))
+async def cardgozar_cancel_callback(callback: CallbackQuery, db_user: dict):
+    payment_id = int(callback.data.split(":")[1])
+    db = get_db()
+    payment = await db.get_payment(payment_id)
+    if not payment or payment["user_id"] != db_user["id"]:
+        await callback.answer("پرداخت پیدا نشد.", show_alert=True)
+        return
+
+    if payment["status"] == "pending":
+        await db._execute(
+            "UPDATE payments SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+            (payment_id,),
+        )
+        try:
+            await callback.message.edit_text("❌ پرداخت توسط شما لغو شد.")
+        except Exception:
+            pass
+        await callback.answer("پرداخت لغو شد.")
+    else:
+        await callback.answer("این پرداخت قابل لغو نیست.", show_alert=True)
 
 
 @router.message(F.text == t("support"))

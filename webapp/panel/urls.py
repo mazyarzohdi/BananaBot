@@ -61,4 +61,7 @@ urlpatterns = [
 
     # Admin — settings
     path("admin/settings/", views.admin_settings, name="admin_settings"),
+
+    # CardGozar Gateway Callback / Webhook
+    path("api/payments/cardgozar/callback/", views.cardgozar_callback, name="cardgozar_callback"),
 ]
