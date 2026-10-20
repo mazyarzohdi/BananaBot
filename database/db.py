@@ -138,23 +138,18 @@ class Database:
         return user["balance"] if user else 0
 
     async def deduct_balance_atomic(self, user_id: int, amount: int) -> bool:
-        """Atomic balance deduction in SQLite.
+        """Atomic balance deduction in SQLite / PostgreSQL.
         Only succeeds if current balance >= amount. Returns True on success, False if insufficient balance.
         """
         if amount < 0:
             return False
         if amount == 0:
             return True
-        conn = await self.connect()
-        try:
-            cursor = await conn.execute(
-                "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
-                (amount, user_id, amount),
-            )
-            await conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            await conn.close()
+        rows_affected = await self._execute(
+            "UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?",
+            (amount, user_id, amount),
+        )
+        return rows_affected > 0
 
     async def refund_balance(self, user_id: int, amount: int) -> int:
         """Safely restores balance if a downstream operation (e.g. panel API call) fails."""

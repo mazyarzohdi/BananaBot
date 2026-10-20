@@ -139,6 +139,17 @@ async def _do_fulfill_payment(bot: Bot, db, payment_id: int, payment: dict) -> d
             # Save valid order_id to payments table and clear handled_by
             await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
 
+            # Reward referral if buyer was referred
+            try:
+                from bot.handlers.user import _reward_referral_and_notify
+                await _reward_referral_and_notify(
+                    bot, db, buyer_user_id=user["id"],
+                    purchase_amount=price, order_id=order_id,
+                    source="cardgozar_product",
+                )
+            except Exception:
+                logger.exception("Failed to award referral commission during product fulfillment")
+
             # Send delivery message to user
             msg = t(
                 "purchase_success",
@@ -211,6 +222,18 @@ async def _do_fulfill_payment(bot: Bot, db, payment_id: int, payment: dict) -> d
                         f"تمدید سرویس #{sub['id']} از درگاه {payment.get('payment_method', 'cardgozar')}",
                     )
                     await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
+
+                    # Reward referral if buyer was referred
+                    try:
+                        from bot.handlers.user import _reward_referral_and_notify
+                        await _reward_referral_and_notify(
+                            bot, db, buyer_user_id=user["id"],
+                            purchase_amount=product["price"], order_id=order_id,
+                            source="cardgozar_renew",
+                        )
+                    except Exception:
+                        logger.exception("Failed to award referral commission during renew fulfillment")
+
                     renew_msg = (
                         f"✅ سرویس #{sub['id']} ({sub['email']}) شما با موفقیت تمدید شد!\n"
                         f"📊 حجم جدید: {product['volume_gb']} GB\n"
@@ -266,6 +289,18 @@ async def _do_fulfill_payment(bot: Bot, db, payment_id: int, payment: dict) -> d
                     f"خرید/تمدید نمایندگی {plan['name']}",
                 )
                 await db._execute("UPDATE payments SET order_id = ?, handled_by = 0 WHERE id = ?", (order_id, payment_id))
+
+                # Reward referral if buyer was referred
+                try:
+                    from bot.handlers.user import _reward_referral_and_notify
+                    await _reward_referral_and_notify(
+                        bot, db, buyer_user_id=user["id"],
+                        purchase_amount=plan["price"], order_id=order_id,
+                        source="cardgozar_reseller",
+                    )
+                except Exception:
+                    logger.exception("Failed to award referral commission during reseller fulfillment")
+
                 reseller_msg = (
                     f"✅ پلن نمایندگی «{plan['name']}» با موفقیت برای شما فعال شد!\n"
                     f"📊 سقف حجم: {plan['volume_gb']} GB\n"

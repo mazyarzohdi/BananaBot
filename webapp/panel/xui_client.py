@@ -17,9 +17,15 @@ import json
 import random
 import string
 import time
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any
+
+# Create an unverified SSL context for 3x-ui / x-ui panels using self-signed certs
+_unverified_ssl_ctx = ssl.create_default_context()
+_unverified_ssl_ctx.check_hostname = False
+_unverified_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 class XUIError(Exception):
@@ -38,7 +44,7 @@ def _request(base_url: str, api_token: str, method: str, path: str, data: Any = 
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_ctx) as resp:
             text = resp.read().decode("utf-8")
     except (urllib.error.URLError, TimeoutError) as e:
         raise XUIError(str(e)) from e
@@ -139,7 +145,7 @@ def delete_client(base_url: str, api_token: str, email: str, keep_traffic: bool 
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_unverified_ssl_ctx) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
     except (urllib.error.URLError, TimeoutError, ValueError):
         return False

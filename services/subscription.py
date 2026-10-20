@@ -34,7 +34,6 @@ class SubscriptionService:
         if not inbound_ids:
             raise ValueError("Inbound برای پنل تنظیم نشده")
 
-        client = XUIClient(panel["url"], panel["api_token"])
         sub_id = generate_sub_id()
         on_hold = bool(panel.get("on_hold", 0))
         expiry_ms = compute_expiry_ms(
@@ -58,34 +57,35 @@ class SubscriptionService:
         email = f"u{telegram_id}_s{sub_db_id}"
         await self.db.update_subscription(sub_db_id, email=email)
 
-        try:
-            await client.add_client(
-                email=email,
-                inbound_ids=inbound_ids,
-                total_gb=volume_gb,
-                expiry_time_ms=expiry_ms,
-                sub_id=sub_id,
-                comment=f"bot_user_{telegram_id}",
-                tg_id=telegram_id,
-                on_hold=on_hold,
-            )
-        except XUIError as e:
-            logger.warning("add_client failed, checking panel for %s: %s", email, e)
+        async with XUIClient(panel["url"], panel["api_token"]) as client:
             try:
-                client_exists = await client.get_client(email)
+                await client.add_client(
+                    email=email,
+                    inbound_ids=inbound_ids,
+                    total_gb=volume_gb,
+                    expiry_time_ms=expiry_ms,
+                    sub_id=sub_id,
+                    comment=f"bot_user_{telegram_id}",
+                    tg_id=telegram_id,
+                    on_hold=on_hold,
+                )
+            except XUIError as e:
+                logger.warning("add_client failed, checking panel for %s: %s", email, e)
+                try:
+                    client_exists = await client.get_client(email)
+                except Exception:
+                    client_exists = None
+
+                if not client_exists:
+                    await self.db.update_subscription(sub_db_id, status="failed")
+                    raise ValueError(f"خطا در ایجاد کانفیگ روی پنل: {e}") from e
+                else:
+                    logger.info("Client %s exists on panel despite add_client error. Proceeding.", email)
+
+            try:
+                links = await client.get_client_links(email)
             except Exception:
-                client_exists = None
-
-            if not client_exists:
-                await self.db.update_subscription(sub_db_id, status="failed")
-                raise ValueError(f"خطا در ایجاد کانفیگ روی پنل: {e}") from e
-            else:
-                logger.info("Client %s exists on panel despite add_client error. Proceeding.", email)
-
-        try:
-            links = await client.get_client_links(email)
-        except Exception:
-            links = []
+                links = []
 
         config_link = links[0] if links else ""
         sub_link = self._build_sub_link(panel, sub_id)
@@ -124,8 +124,8 @@ class SubscriptionService:
         if not sub:
             raise ValueError("سرویس پیدا نشد")
 
-        client = XUIClient(sub["panel_url"], sub["api_token"])
-        links = await client.get_client_links(sub["email"])
+        async with XUIClient(sub["panel_url"], sub["api_token"]) as client:
+            links = await client.get_client_links(sub["email"])
         config_link = links[0] if links else sub.get("config_link", "")
 
         sub_link = sub.get("sub_link", "")
@@ -147,8 +147,8 @@ class SubscriptionService:
         if not sub:
             raise ValueError("سرویس پیدا نشد")
 
-        client = XUIClient(sub["panel_url"], sub["api_token"])
-        traffic = await client.get_client_traffic(sub["email"])
+        async with XUIClient(sub["panel_url"], sub["api_token"]) as client:
+            traffic = await client.get_client_traffic(sub["email"])
         up = traffic.get("up", 0)
         down = traffic.get("down", 0)
         total = traffic.get("total", 0)
@@ -174,49 +174,48 @@ class SubscriptionService:
             raise ValueError("سرویس پیدا نشد")
 
         panel = await self.db.get_panel(sub["panel_id"])
-        client = XUIClient(sub["panel_url"], sub["api_token"])
-
-        try:
-            client_data = await client.get_client(sub["email"])
-        except XUIError as e:
-            raise ValueError(f"خطا در دریافت اطلاعات سرویس از پنل: {e}") from e
-        if not client_data:
-            raise ValueError("کلاینت روی پنل پیدا نشد")
-
-        on_hold = bool(panel and panel.get("on_hold", 0))
-
-        # زمان انقضا از الان حساب می‌شه (ریست کامل)
-        new_expiry_ms = compute_expiry_ms(extra_days, on_hold=on_hold)
-
-        # حجم جدید بر اساس پلن تمدیدی (ریست کامل)
-        product_volume = extra_gb if extra_gb > 0 else sub["volume_gb"]
-        new_total_bytes = int(product_volume * (1024 ** 3))
-
-        update_payload = {
-            **client_data,
-            "email": sub["email"],
-            "expiryTime": new_expiry_ms,
-            "totalGB": new_total_bytes,
-            "enable": True,
-        }
-
-        try:
-            await client.update_client(sub["email"], update_payload)
-        except XUIError as e:
+        async with XUIClient(sub["panel_url"], sub["api_token"]) as client:
             try:
-                check_client = await client.get_client(sub["email"])
-                if check_client and check_client.get("expiryTime") == new_expiry_ms:
-                    logger.info("Client %s updated despite error. Proceeding.", sub["email"])
-                else:
-                    raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
-            except Exception:
-                raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
+                client_data = await client.get_client(sub["email"])
+            except XUIError as e:
+                raise ValueError(f"خطا در دریافت اطلاعات سرویس از پنل: {e}") from e
+            if not client_data:
+                raise ValueError("کلاینت روی پنل پیدا نشد")
 
-        # ریست ترافیک مصرفی روی پنل
-        try:
-            await client.reset_client_traffic(sub["email"])
-        except XUIError as e:
-            logger.warning("reset_client_traffic failed (non-fatal): %s", e)
+            on_hold = bool(panel and panel.get("on_hold", 0))
+
+            # زمان انقضا از الان حساب می‌شه (ریست کامل)
+            new_expiry_ms = compute_expiry_ms(extra_days, on_hold=on_hold)
+
+            # حجم جدید بر اساس پلن تمدیدی (ریست کامل)
+            product_volume = extra_gb if extra_gb > 0 else sub["volume_gb"]
+            new_total_bytes = int(product_volume * (1024 ** 3))
+
+            update_payload = {
+                **client_data,
+                "email": sub["email"],
+                "expiryTime": new_expiry_ms,
+                "totalGB": new_total_bytes,
+                "enable": True,
+            }
+
+            try:
+                await client.update_client(sub["email"], update_payload)
+            except XUIError as e:
+                try:
+                    check_client = await client.get_client(sub["email"])
+                    if check_client and check_client.get("expiryTime") == new_expiry_ms:
+                        logger.info("Client %s updated despite error. Proceeding.", sub["email"])
+                    else:
+                        raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
+                except Exception:
+                    raise ValueError(f"خطا در تمدید سرویس روی پنل: {e}") from e
+
+            # ریست ترافیک مصرفی روی پنل
+            try:
+                await client.reset_client_traffic(sub["email"])
+            except XUIError as e:
+                logger.warning("reset_client_traffic failed (non-fatal): %s", e)
 
         new_volume_gb = product_volume
         await self.db.update_subscription(
@@ -240,10 +239,10 @@ class SubscriptionService:
         if not sub:
             return
 
-        xui = XUIClient(sub["panel_url"], sub["api_token"])
-        try:
-            await xui.delete_client(sub["email"])
-        except XUIError as e:
-            logger.warning("Panel delete failed: %s", e)
+        async with XUIClient(sub["panel_url"], sub["api_token"]) as xui:
+            try:
+                await xui.delete_client(sub["email"])
+            except XUIError as e:
+                logger.warning("Panel delete failed: %s", e)
 
         await self.db.update_subscription(subscription_id, status="deleted")

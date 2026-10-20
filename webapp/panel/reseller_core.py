@@ -121,7 +121,7 @@ def annotate_config_usage(reseller: dict, configs: list[dict]) -> None:
         if c["status"] == "deleted":
             continue
         try:
-            traffic = xui_client.get_client_traffic(panel_url, api_token, c["email"])
+            traffic = xui_client.get_client_traffic(panel_url, api_token, c["email"], timeout=2.5)
             up = traffic.get("up") or 0
             down = traffic.get("down") or 0
             c["usage_used_gb"] = (up + down) / (1024 ** 3)

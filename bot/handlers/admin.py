@@ -12,11 +12,12 @@ from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
-from aiogram.filters import Command
+from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BufferedInputFile,
+    TelegramObject,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -76,6 +77,18 @@ from utils.helpers import (
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+class AdminFilter(BaseFilter):
+    """Router-level security guard: guarantees that every message and callback
+    in this router is processed ONLY if sent by a configured admin_id."""
+    async def __call__(self, event: TelegramObject) -> bool:
+        user = getattr(event, "from_user", None)
+        return bool(user and user.id in get_settings().admin_ids)
+
+
+router.message.filter(AdminFilter())
+router.callback_query.filter(AdminFilter())
 
 
 class AdminPanelForm(StatesGroup):
@@ -559,8 +572,8 @@ async def add_panel_sub_link(message: Message, state: FSMContext):
         await db.update_panel(panel_id, sub_link_template=sub_link_template)
     await state.clear()
 
-    client = XUIClient(data["url"], data["api_token"])
-    ok = await client.test_connection()
+    async with XUIClient(data["url"], data["api_token"]) as client:
+        ok = await client.test_connection()
     status = "✅ اتصال موفق" if ok else "⚠️ اتصال ناموفق — تنظیمات را بررسی کنید"
     sub_status = "✅ لینک ساب تنظیم شد" if sub_link_template else "⚠️ لینک ساب تنظیم نشد"
 
@@ -651,13 +664,13 @@ async def test_panel(callback: CallbackQuery):
     if not panel:
         await callback.answer("پیدا نشد", show_alert=True)
         return
-    client = XUIClient(panel["url"], panel["api_token"])
-    try:
-        status = await client.get_server_status()
-        xray = status.get("xray", {}).get("state", "—")
-        await callback.answer(f"✅ Xray: {xray}", show_alert=True)
-    except Exception as e:
-        await callback.answer(f"❌ {e}", show_alert=True)
+    async with XUIClient(panel["url"], panel["api_token"]) as client:
+        try:
+            status = await client.get_server_status()
+            xray = status.get("xray", {}).get("state", "—")
+            await callback.answer(f"✅ Xray: {xray}", show_alert=True)
+        except Exception as e:
+            await callback.answer(f"❌ {e}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("inbounds:"))
@@ -701,11 +714,11 @@ async def edit_inbounds_start(callback: CallbackQuery, state: FSMContext):
     # تلاش برای گرفتن لیست Inbounds از پنل (اگر اتصال برقرار باشد)
     live_list = ""
     try:
-        client = XUIClient(panel["url"], panel["api_token"])
-        options = await client.list_inbound_options()
-        if options:
-            lines = [f"  ID {o['id']}: {o.get('remark', '---')} ({o.get('protocol', '---')})" for o in options]
-            live_list = "\n\n📡 Inbounds موجود در پنل:\n" + "\n".join(lines)
+        async with XUIClient(panel["url"], panel["api_token"]) as client:
+            options = await client.list_inbound_options()
+            if options:
+                lines = [f"  ID {o['id']}: {o.get('remark', '---')} ({o.get('protocol', '---')})" for o in options]
+                live_list = "\n\n📡 Inbounds موجود در پنل:\n" + "\n".join(lines)
     except Exception:
         live_list = "\n\n⚠️ اتصال به پنل برقرار نشد — IDها را دستی وارد کنید."
 
@@ -3798,12 +3811,12 @@ async def reseller_delete_confirmed(callback: CallbackQuery):
     configs = await db.get_reseller_configs(reseller_id, include_deleted=False)
     failed_emails = []
     if configs:
-        client = XUIClient(reseller["panel_url"], reseller["api_token"])
-        for cfg in configs:
-            try:
-                await client.delete_client(cfg["email"])
-            except Exception:
-                failed_emails.append(cfg["email"])
+        async with XUIClient(reseller["panel_url"], reseller["api_token"]) as client:
+            for cfg in configs:
+                try:
+                    await client.delete_client(cfg["email"])
+                except Exception:
+                    failed_emails.append(cfg["email"])
 
     await db.delete_reseller(reseller_id)
 

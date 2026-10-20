@@ -540,6 +540,19 @@ def reconcile_postgres() -> dict:
                             report["sequences_synced"].append(table_name)
                 except Exception:
                     pass
+
+            # 6. High-throughput indexes for PostgreSQL
+            for pg_idx in (
+                "CREATE INDEX IF NOT EXISTS idx_payments_gateway_token ON payments(gateway_order_token)",
+                "CREATE INDEX IF NOT EXISTS idx_payments_expected_amount ON payments(expected_amount, status)",
+                "CREATE INDEX IF NOT EXISTS idx_subscriptions_expiry ON subscriptions(status, expiry_time)",
+                "CREATE INDEX IF NOT EXISTS idx_subscriptions_user_trial ON subscriptions(user_id, is_trial)",
+                "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
+            ):
+                try:
+                    await conn.execute(pg_idx)
+                except Exception:
+                    pass
         finally:
             await conn.close()
 
@@ -711,6 +724,11 @@ def reconcile(db_path: str = "data/bot.db") -> dict:
             "CREATE INDEX IF NOT EXISTS idx_coupon_uses_coupon_user ON coupon_uses(coupon_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_gateway_token ON payments(gateway_order_token)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_expected_amount ON payments(expected_amount, status)",
+            "CREATE INDEX IF NOT EXISTS idx_subscriptions_expiry ON subscriptions(status, expiry_time)",
+            "CREATE INDEX IF NOT EXISTS idx_subscriptions_user_trial ON subscriptions(user_id, is_trial)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
         ):
             try:
                 conn.execute(idx_stmt)

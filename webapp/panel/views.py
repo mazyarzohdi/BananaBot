@@ -1294,7 +1294,7 @@ def _notify_cardgozar_approved(conn, payment: dict, ref_id: str):
             f"همچنین می‌توانید جهت ساخت و دریافت فوری کانفیگ روی دکمه زیر کلیک کنید 👇"
         )
         reply_markup = {"inline_keyboard": [[
-            {"text": "🛒 تکمیل خرید و تحویل سرویس", "callback_data": f"confirm_buy:{payment['product_id']}"}
+            {"text": "🔄 بررسی و تحویل فوری کانفیگ", "callback_data": f"cg_verify:{payment['id']}"}
         ]]}
     else:
         text += "\nموجودی به کیف پول شما اضافه شد. جهت خرید سرویس از دکمه زیر استفاده کنید 👇"

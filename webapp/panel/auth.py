@@ -26,9 +26,10 @@ def verify_telegram_auth(data: dict) -> bool:
     if not token:
         return False
 
-    check_hash = data.pop("hash", "")
+    data_copy = dict(data)
+    check_hash = data_copy.pop("hash", "")
     data_check_string = "\n".join(
-        f"{k}={v}" for k, v in sorted(data.items())
+        f"{k}={v}" for k, v in sorted(data_copy.items())
     )
     secret_key = hashlib.sha256(token.encode()).digest()
     computed = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
