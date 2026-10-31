@@ -526,6 +526,11 @@ SETTINGS_META = {
     "channel_required":    {"label": "🔒 کانال اجباری (ID)",        "type": "text"},
     "channel_invite_link": {"label": "🔗 لینک دعوت کانال",          "type": "text"},
     "min_deposit":         {"label": "💰 حداقل شارژ (تومان)",       "type": "text"},
+    "payment_method_mode": {"label": "💳 روش پرداخت فعال (both=انتخاب خریدار / cardgozar=فقط کارت‌گذر / card=فقط ارسال فیش / none=غیرفعال)", "type": "text"},
+    "cardgozar_enabled":   {"label": "🚀 وضعیت درگاه کارت‌گذر (1=فعال/0=غیر)", "type": "text"},
+    "card_payment_enabled": {"label": "📸 وضعیت کارت‌به‌کارت دستی (1=فعال/0=غیر)", "type": "text"},
+    "card_number":         {"label": "💳 شماره کارت بانکی", "type": "text"},
+    "card_holder":         {"label": "👤 نام صاحب حساب کارت", "type": "text"},
     "error_alerts_enabled": {"label": "🚨 ارسال هشدار خطای ربات به ادمین در تلگرام (1=فعال/0=غیر)", "type": "text"},
     "error_retention_days": {"label": "🗑 مدت نگه‌داری لاگ‌های خطا (روز)", "type": "text"},
 }
@@ -568,11 +573,28 @@ def admin_settings(request: HttpRequest):
         "port": current.get("auto_payment_port", "8100"),
         "host": request.get_host().split(":")[0],
     }
+    mode_names = {
+        "both": "🔄 هر دو روش (انتخاب خریدار)",
+        "cardgozar": "🚀 فقط درگاه کارت‌گذر (خودکار)",
+        "card": "💳 فقط کارت به کارت دستی (فیش)",
+        "none": "⛔ غیرفعال (هیچ‌کدام)",
+    }
+    raw_mode = current.get("payment_method_mode", "both")
+    payment_settings = {
+        "mode": raw_mode,
+        "mode_label": mode_names.get(raw_mode, raw_mode),
+        "cg_enabled": current.get("cardgozar_enabled", "1") == "1",
+        "card_enabled": current.get("card_payment_enabled", "1") == "1",
+        "has_cg_api_key": bool(current.get("cardgozar_api_key", "").strip()),
+        "card_number": current.get("card_number", ""),
+        "card_holder": current.get("card_holder", ""),
+    }
     return render(request, "admin/settings.html", {
         "fields": fields,
         "is_admin": True,
         "revenue": revenue,
         "auto_payment": auto_payment,
+        "payment_settings": payment_settings,
     })
 
 

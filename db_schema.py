@@ -359,11 +359,12 @@ DEFAULT_SETTINGS = {
     "channel_required": "",
     "channel_invite_link": "",
     "min_deposit": "10000",
-    "payment_method_mode": "cardgozar",  # "cardgozar", "card", "both"
+    "payment_method_mode": "both",  # "both" (انتخاب کاربر), "cardgozar" (فقط درگاه), "card" (فقط ارسال فیش), "none" (غیرفعال)
     "cardgozar_enabled": "1",
     "cardgozar_api_key": "",
     "cardgozar_secret_key": "",
     "cardgozar_callback_url": "",
+    "card_payment_enabled": "1",  # "1" = فعال, "0" = غیرفعال (پرداخت با ارسال رسید / کارت به کارت دستی)
     "auto_payment_enabled": "0",
     "auto_payment_secret": "",
     "auto_payment_port": "8100",

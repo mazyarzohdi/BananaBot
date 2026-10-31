@@ -30,6 +30,36 @@
 </div>
 
 <div class="card mb-3" style="max-width:700px">
+  <h2 class="card-title"><i class="fa fa-credit-card"></i> روش‌های پرداخت و درگاه‌ها</h2>
+  <div class="detail-row">
+    <span>حالت روش پرداخت</span>
+    <strong class="text-blue">{{ payment_settings.mode_label }}</strong>
+  </div>
+  <div class="detail-row">
+    <span>درگاه پرداخت هوشمند کارت‌گذر (تایید آنی)</span>
+    {% if payment_settings.cg_enabled %}<span class="badge-green">فعال</span>
+    {% else %}<span class="badge-orange">غیرفعال</span>{% endif %}
+  </div>
+  <div class="detail-row">
+    <span>کارت به کارت دستی (ارسال تصویر فیش)</span>
+    {% if payment_settings.card_enabled %}<span class="badge-green">فعال</span>
+    {% else %}<span class="badge-orange">غیرفعال</span>{% endif %}
+  </div>
+  <div class="detail-row">
+    <span>شماره کارت بانکی</span>
+    <code>{{ payment_settings.card_number|default:"❌ تنظیم نشده" }}</code>
+  </div>
+  <div class="detail-row">
+    <span>صاحب حساب</span>
+    <strong>{{ payment_settings.card_holder|default:"—" }}</strong>
+  </div>
+  <p class="wallet-note">
+    <i class="fa fa-info-circle"></i>
+    تنظیمات کامل، سوئیچ روش‌های پرداخت بین درگاه کارت‌گذر و کارت‌به‌کارت، یا فعال‌سازی انتخاب دلخواه خریدار، هم از جدول زیر و هم از داخل ربات تلگرام (منوی ادمین ← ⚙️ تنظیمات ربات ← 💳 مدیریت درگاه‌های پرداخت) قابل مدیریت است.
+  </p>
+</div>
+
+<div class="card mb-3" style="max-width:700px">
   <h2 class="card-title"><i class="fa fa-sack-dollar"></i> ویرایش دستی کل درآمد</h2>
   <p class="wallet-note">
     <i class="fa fa-info-circle"></i>

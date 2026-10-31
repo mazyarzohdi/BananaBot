@@ -193,22 +193,50 @@ async def _send_card_payment_instructions(
 
 
 async def _get_payment_mode(db) -> str:
-    """Returns the effective active payment method mode: 'cardgozar', 'card', or 'both'."""
-    mode = await db.get_setting("payment_method_mode", "cardgozar")
-    cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
-    cg_api_key = await db.get_setting("cardgozar_api_key", "")
-    has_cg = cg_enabled and bool(cg_api_key.strip())
+    """Returns the effective active payment method mode: 'both', 'cardgozar', 'card', or 'none'.
+    Respects admin toggles, API keys, and card configuration.
+    """
+    mode = await db.get_setting("payment_method_mode", "both")
 
-    if mode == "cardgozar":
-        if not has_cg:
+    cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+    cg_api_key = (await db.get_setting("cardgozar_api_key", "")).strip()
+    has_cg = cg_enabled and bool(cg_api_key)
+
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
+    settings = get_settings()
+    card_num = (settings.card_number or "").strip() or (await db.get_setting("card_number", "")).strip()
+    has_card = card_enabled and bool(card_num)
+
+    if mode == "none":
+        return "none"
+    elif mode == "cardgozar":
+        if has_cg:
+            return "cardgozar"
+        elif has_card:
             return "card"
-        return "cardgozar"
+        return "none"
+    elif mode == "card":
+        if has_card:
+            return "card"
+        elif has_cg:
+            return "cardgozar"
+        return "none"
     elif mode == "both":
-        if not has_cg:
+        if has_cg and has_card:
+            return "both"
+        elif has_cg:
+            return "cardgozar"
+        elif has_card:
             return "card"
-        return "both"
+        return "none"
     else:
-        return "card"
+        if has_cg and has_card:
+            return "both"
+        elif has_cg:
+            return "cardgozar"
+        elif has_card:
+            return "card"
+        return "none"
 
 
 async def _initiate_cardgozar_payment(
@@ -679,15 +707,25 @@ async def confirm_buy(callback: CallbackQuery, db_user: dict, state: FSMContext)
             current_balance = fresh_user["balance"] if fresh_user else 0
             deficit = max(0, final_price - current_balance)
             mode = await _get_payment_mode(db)
-            await callback.message.edit_text(
-                t(
-                    "insufficient_balance",
-                    balance=current_balance,
-                    price=final_price,
-                    deficit=deficit,
-                ),
-                reply_markup=insufficient_balance_inline(product_id, mode=mode),
-            )
+            if mode == "none":
+                text = (
+                    f"❌ موجودی کیف پول کافی نیست.\n\n"
+                    f"موجودی شما: {current_balance:,} تومان\n"
+                    f"مبلغ مورد نیاز: {final_price:,} تومان\n"
+                    f"کسری موجودی: {deficit:,} تومان\n\n"
+                    f"⚠️ در حال حاضر تمامی روش‌های پرداخت موقتاً غیرفعال هستند. لطفاً با پشتیبانی در ارتباط باشید."
+                )
+                await callback.message.edit_text(text, reply_markup=cancel_kb())
+            else:
+                await callback.message.edit_text(
+                    t(
+                        "insufficient_balance",
+                        balance=current_balance,
+                        price=final_price,
+                        deficit=deficit,
+                    ),
+                    reply_markup=insufficient_balance_inline(product_id, mode=mode),
+                )
             await callback.answer()
             return
 
@@ -758,6 +796,11 @@ async def card_topup_start(callback: CallbackQuery, db_user: dict, state: FSMCon
     deficit = final_price - balance
     if deficit <= 0:
         await callback.answer("موجودی شما کافی است، دوباره روی تأیید خرید بزنید.", show_alert=True)
+        return
+
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
+    if not card_enabled:
+        await callback.answer("❌ پرداخت کارت به کارت دستی در حال حاضر غیرفعال است.", show_alert=True)
         return
 
     settings = get_settings()
@@ -1155,10 +1198,20 @@ async def renew_service_execute(callback: CallbackQuery, db_user: dict):
             current_balance = fresh_user["balance"] if fresh_user else 0
             deficit = max(0, price - current_balance)
             mode = await _get_payment_mode(db)
-            await callback.message.edit_text(
-                t("insufficient_balance", balance=current_balance, price=price, deficit=deficit),
-                reply_markup=insufficient_balance_renew_inline(sub_id, mode=mode),
-            )
+            if mode == "none":
+                text = (
+                    f"❌ موجودی کیف پول کافی نیست.\n\n"
+                    f"موجودی شما: {current_balance:,} تومان\n"
+                    f"مبلغ مورد نیاز: {price:,} تومان\n"
+                    f"کسری موجودی: {deficit:,} تومان\n\n"
+                    f"⚠️ در حال حاضر تمامی روش‌های پرداخت موقتاً غیرفعال هستند. لطفاً با پشتیبانی در ارتباط باشید."
+                )
+                await callback.message.edit_text(text, reply_markup=cancel_kb())
+            else:
+                await callback.message.edit_text(
+                    t("insufficient_balance", balance=current_balance, price=price, deficit=deficit),
+                    reply_markup=insufficient_balance_renew_inline(sub_id, mode=mode),
+                )
             await callback.answer()
             return
 
@@ -1211,6 +1264,11 @@ async def card_topup_renew_start(callback: CallbackQuery, db_user: dict):
     deficit = product["price"] - balance
     if deficit <= 0:
         await callback.answer("موجودی شما کافی است، دوباره روی تأیید تمدید بزنید.", show_alert=True)
+        return
+
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
+    if not card_enabled:
+        await callback.answer("❌ پرداخت کارت به کارت دستی در حال حاضر غیرفعال است.", show_alert=True)
         return
 
     settings = get_settings()
@@ -1319,18 +1377,18 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
 
     mode = await _get_payment_mode(db)
 
-    if mode == "cardgozar":
-        await state.clear()
-        await _initiate_cardgozar_payment(message.answer, db, db_user["id"], amount)
-    elif mode == "both":
+    if mode == "both":
         await state.clear()
         await message.answer(
             f"💰 مبلغ درخواستی برای افزایش موجودی: <b>{amount:,} تومان</b>\n\n"
-            "لطفاً روش پرداخت مورد نظر خود را انتخاب کنید:",
+            "لطفاً روش پرداخت دلخواه خود را انتخاب کنید:",
             reply_markup=payment_method_choice_inline("deposit", 0, amount),
             parse_mode="HTML",
         )
-    else:  # mode == "card"
+    elif mode == "cardgozar":
+        await state.clear()
+        await _initiate_cardgozar_payment(message.answer, db, db_user["id"], amount)
+    elif mode == "card":
         settings = get_settings()
         card = settings.card_number or await db.get_setting("card_number", "")
         if not card:
@@ -1340,6 +1398,13 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
 
         await state.clear()
         await _send_card_payment_instructions(message.answer, db, db_user["id"], amount)
+    else:  # mode == "none"
+        await state.clear()
+        await message.answer(
+            "❌ در حال حاضر تمامی روش‌های پرداخت توسط مدیریت موقتاً غیرفعال شده‌اند.\n"
+            "لطفاً ساعاتی دیگر مجدداً تلاش کرده یا با پشتیبانی در ارتباط باشید.",
+            reply_markup=main_menu(),
+        )
 
 
 @router.message(F.photo)
@@ -1597,6 +1662,11 @@ async def reseller_card_topup_start(callback: CallbackQuery, db_user: dict):
         await callback.answer("موجودی شما کافی است، دوباره روی تأیید بزنید.", show_alert=True)
         return
 
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
+    if not card_enabled:
+        await callback.answer("❌ پرداخت کارت به کارت دستی در حال حاضر غیرفعال است.", show_alert=True)
+        return
+
     settings = get_settings()
     card = settings.card_number or await db.get_setting("card_number", "")
     if not card:
@@ -1650,8 +1720,18 @@ async def choose_payment_method(callback: CallbackQuery, db_user: dict, state: F
 
     db = get_db()
     await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     if method == "cardgozar":
+        cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+        cg_api_key = (await db.get_setting("cardgozar_api_key", "")).strip()
+        if not cg_enabled or not cg_api_key:
+            await callback.message.answer("❌ درگاه پرداخت کارت‌گذر در حال حاضر غیرفعال است.")
+            return
+
         kwargs = {}
         if action_type == "buy" and target_id:
             kwargs["product_id"] = target_id
@@ -1673,6 +1753,11 @@ async def choose_payment_method(callback: CallbackQuery, db_user: dict, state: F
         )
     else:
         # manual card
+        card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
+        if not card_enabled:
+            await callback.message.answer("❌ پرداخت کارت به کارت دستی در حال حاضر غیرفعال است.")
+            return
+
         kwargs = {}
         if action_type == "buy" and target_id:
             kwargs["product_id"] = target_id
@@ -1681,13 +1766,22 @@ async def choose_payment_method(callback: CallbackQuery, db_user: dict, state: F
         elif action_type == "reseller" and target_id:
             kwargs["reseller_plan_id"] = target_id
 
-        await _send_card_payment_instructions(
+        payment_id = await _send_card_payment_instructions(
             callback.message.answer,
             db,
             db_user["id"],
             amount,
             **kwargs,
         )
+        if action_type == "buy" and payment_id:
+            fsm_data = await state.get_data()
+            coupon_code = fsm_data.get("coupon_code")
+            discount_amount = int(fsm_data.get("discount_amount", 0))
+            if coupon_code and discount_amount:
+                await db._execute(
+                    "UPDATE payments SET coupon_code = ?, discount_amount = ? WHERE id = ?",
+                    (coupon_code, discount_amount, payment_id),
+                )
 
 
 @router.callback_query(F.data.startswith("cg_verify:"))

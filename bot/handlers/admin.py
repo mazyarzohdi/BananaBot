@@ -2125,9 +2125,10 @@ _BOOL_CHOICES = [("1", "✅ فعال کردن"), ("0", "❌ غیرفعال کر�
 _REFERRAL_TYPE_CHOICES = [("percent", "📊 درصدی از مبلغ خرید"), ("fixed", "💰 مبلغ ثابت تومانی")]
 # دکمه‌های انتخاب روش پرداخت
 _PAYMENT_MODE_CHOICES = [
+    ("both", "🔄 هر دو روش (انتخاب با کاربر)"),
     ("cardgozar", "🚀 فقط درگاه کارت‌گذر (خودکار)"),
     ("card", "💳 فقط کارت به کارت دستی (فیش)"),
-    ("both", "🔄 هر دو روش (انتخاب کاربر)"),
+    ("none", "⛔ غیرفعال‌سازی موقت تمامی روش‌ها"),
 ]
 
 # تعریف مشخصات هر کلید تنظیمات.
@@ -2138,13 +2139,19 @@ _PAYMENT_MODE_CHOICES = [
 _SETTINGS_META = {
     "payment_method_mode": {
         "label": "💳 روش پرداخت فعال",
-        "hint": "تعیین روش پرداخت کاربران: فقط درگاه آنلاین کارت‌گذر، فقط کارت‌به‌کارت دستی (رسید)، یا هر دو روش با انتخاب خریدار.",
+        "hint": "تعیین روش پرداخت کاربران: هر دو روش با انتخاب کاربر، فقط درگاه آنلاین کارت‌گذر، فقط کارت‌به‌کارت دستی (رسید)، یا غیرفعال‌سازی کامل.",
         "type": "choice",
         "choices": _PAYMENT_MODE_CHOICES,
     },
     "cardgozar_enabled": {
         "label": "🚀 وضعیت درگاه کارت‌گذر",
         "hint": "فعال یا غیرفعال بودن درگاه پرداخت هوشمند کارت‌گذر.",
+        "type": "bool",
+        "choices": _BOOL_CHOICES,
+    },
+    "card_payment_enabled": {
+        "label": "📸 وضعیت کارت به کارت دستی (ارسال فیش)",
+        "hint": "فعال یا غیرفعال بودن روش پرداخت کارت به کارت دستی و ارسال فیش.",
         "type": "bool",
         "choices": _BOOL_CHOICES,
     },
@@ -2281,18 +2288,21 @@ async def cfg_back(callback: CallbackQuery, state: FSMContext):
 
 
 async def _payment_gateways_overview_text(db) -> str:
-    mode = await db.get_setting("payment_method_mode", "cardgozar")
+    mode = await db.get_setting("payment_method_mode", "both")
     cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
     api_key = await db.get_setting("cardgozar_api_key", "")
     secret_key = await db.get_setting("cardgozar_secret_key", "")
     callback_url = await db.get_setting("cardgozar_callback_url", "")
-    card_number = await db.get_setting("card_number", "")
-    card_holder = await db.get_setting("card_holder", "")
+    settings = get_settings()
+    card_number = (settings.card_number or "").strip() or (await db.get_setting("card_number", "")).strip()
+    card_holder = (settings.card_holder or "").strip() or (await db.get_setting("card_holder", "")).strip()
 
     mode_names = {
+        "both": "🔄 هر دو روش (انتخاب با مشتری)",
         "cardgozar": "🚀 فقط درگاه پرداخت کارت‌گذر (تایید خودکار)",
         "card": "💳 فقط کارت به کارت دستی (ارسال فیش)",
-        "both": "🔄 هر دو روش (انتخاب با مشتری)",
+        "none": "⛔ تمامی روش‌های پرداخت غیرفعال هستند",
     }
 
     panel_url = (get_settings().panel_url or "").rstrip("/")
@@ -2303,16 +2313,17 @@ async def _payment_gateways_overview_text(db) -> str:
         "💳 <b>مدیریت درگاه‌های پرداخت و روش‌های تسویه</b>\n",
         f"⚙️ <b>روش پرداخت فعال:</b> {mode_names.get(mode, mode)}\n",
         "────────────────────",
-        "🚀 <b>تنظیمات درگاه کارت‌گذر (CardGozar):</b>",
+        "🚀 <b>تنظیمات درگاه خودکار کارت‌گذر (CardGozar):</b>",
         f"• وضعیت درگاه: {'🟢 فعال' if cg_enabled else '🔴 غیرفعال'}",
         f"• کلید API: <code>{api_key[:10] + '...' if len(api_key) > 10 else (api_key or '❌ تنظیم نشده')}</code>",
         f"• کلید Secret: <code>{secret_key[:10] + '...' if len(secret_key) > 10 else (secret_key or '❌ تنظیم نشده')}</code>",
         f"• آدرس وبهوک / بازگشت: <code>{effective_callback}</code>\n",
         "────────────────────",
-        "💳 <b>اطلاعات کارت‌به‌کارت دستی:</b>",
+        "💳 <b>تنظیمات کارت‌به‌کارت دستی (ارسال رسید):</b>",
+        f"• وضعیت روش کارت‌به‌کارت: {'🟢 فعال' if card_enabled else '🔴 غیرفعال'}",
         f"• شماره کارت: <code>{card_number or '❌ تنظیم نشده'}</code>",
         f"• صاحب حساب: <b>{card_holder or '—'}</b>\n",
-        "جهت تغییر هر مورد، سوییچ روش پرداخت یا تست اتصال، از دکمه‌های زیر استفاده کنید 👇"
+        "جهت تغییر هر مورد، فعال/غیرفعال‌سازی سریع یا تست اتصال، از دکمه‌های زیر استفاده کنید 👇"
     ]
     return "\n".join(lines)
 
@@ -2323,16 +2334,21 @@ async def cfg_pg_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     db = get_db()
     text = await _payment_gateways_overview_text(db)
-    mode = await db.get_setting("payment_method_mode", "cardgozar")
+    mode = await db.get_setting("payment_method_mode", "both")
     cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+    card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
     api_key = await db.get_setting("cardgozar_api_key", "")
     secret_key = await db.get_setting("cardgozar_secret_key", "")
+    settings = get_settings()
+    card_num = (settings.card_number or "").strip() or (await db.get_setting("card_number", "")).strip()
 
     markup = admin_payment_gateways_inline(
         current_mode=mode,
         cg_enabled=cg_enabled,
-        has_api_key=bool(api_key),
-        has_secret=bool(secret_key),
+        card_enabled=card_enabled,
+        has_api_key=bool(api_key.strip()),
+        has_secret=bool(secret_key.strip()),
+        has_card_number=bool(card_num),
     )
     await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     await callback.answer()
@@ -2342,13 +2358,14 @@ async def cfg_pg_menu(callback: CallbackQuery, state: FSMContext):
 @admin_only
 async def cfg_pg_switch_mode(callback: CallbackQuery):
     db = get_db()
-    mode = await db.get_setting("payment_method_mode", "cardgozar")
+    mode = await db.get_setting("payment_method_mode", "both")
     text = (
         "⚙️ <b>انتخاب روش پرداخت فعال در ربات</b>\n\n"
         "لطفاً مشخص کنید کاربران هنگام واریز یا خرید، از چه روشی پرداخت کنند:\n\n"
-        "• <b>فقط درگاه کارت‌گذر:</b> کاربر مستقیماً به درگاه هدایت می‌شود و سفارش آنی تحویل داده می‌شود.\n"
-        "• <b>فقط کارت‌به‌کارت دستی:</b> کاربر شماره کارت را می‌بیند و تصویر فیش را برای تایید ادمین می‌فرستد.\n"
-        "• <b>هر دو روش:</b> به کاربر امکان انتخاب بین درگاه آنلاین یا کارت دستی داده می‌شود."
+        "• <b>🔄 هر دو روش (انتخاب کاربر):</b> هنگام پرداخت گزینه‌ها به کاربر نمایش داده شده و خریدار روش دلخواهش را انتخاب می‌کند.\n"
+        "• <b>🚀 فقط درگاه کارت‌گذر:</b> کاربر مستقیماً به درگاه هدایت می‌شود و سفارش آنی تحویل داده می‌شود.\n"
+        "• <b>💳 فقط کارت‌به‌کارت دستی:</b> کاربر شماره کارت را می‌بیند و تصویر فیش را برای تایید ادمین می‌فرستد.\n"
+        "• <b>⛔ غیرفعال‌سازی کامل:</b> تمامی تراکنش‌ها و پرداخت‌ها موقتاً مسدود می‌شوند."
     )
     await callback.message.edit_text(text, reply_markup=admin_payment_mode_switch_inline(mode), parse_mode="HTML")
     await callback.answer()
@@ -2373,6 +2390,18 @@ async def cfg_pg_toggle_cg(callback: CallbackQuery, state: FSMContext):
     await db.set_setting("cardgozar_enabled", new_val)
     status_str = "فعال" if new_val == "1" else "غیرفعال"
     await callback.answer(f"✅ درگاه کارت‌گذر {status_str} شد.")
+    await cfg_pg_menu(callback, state)
+
+
+@router.callback_query(F.data == "cfg_pg_toggle_card")
+@admin_only
+async def cfg_pg_toggle_card(callback: CallbackQuery, state: FSMContext):
+    db = get_db()
+    current = await db.get_setting("card_payment_enabled", "1")
+    new_val = "0" if current == "1" else "1"
+    await db.set_setting("card_payment_enabled", new_val)
+    status_str = "فعال" if new_val == "1" else "غیرفعال"
+    await callback.answer(f"✅ کارت به کارت دستی (ارسال فیش) {status_str} شد.")
     await cfg_pg_menu(callback, state)
 
 
