@@ -167,4 +167,59 @@ document.getElementById('make-reseller-modal').addEventListener('click', functio
     <p class="empty-text">این کاربر سرویسی ندارد.</p>
   {% endif %}
 </div>
+
+<!-- تاریخچه پرداختی‌ها -->
+<div class="card mt-3">
+  <h2 class="card-title"><i class="fa fa-credit-card"></i> تاریخچه پرداختی‌های کاربر ({{ payments|length }})</h2>
+  {% if payments %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>شناسه</th>
+        <th>مبلغ</th>
+        <th>روش</th>
+        <th>وضعیت</th>
+        <th>کد پیگیری / درگاه</th>
+        <th>تاریخ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in payments %}
+      <tr>
+        <td>#{{ p.id }}</td>
+        <td class="text-green"><strong>{{ p.amount|default:0 }} تومان</strong></td>
+        <td>
+          <span class="badge badge-info">{{ p.method }}</span>
+        </td>
+        <td>
+          {% if p.status == "approved" or p.status == "completed" %}
+            <span class="badge-green">تایید شده</span>
+          {% elif p.status == "rejected" %}
+            <span class="badge-red">رد شده</span>
+          {% else %}
+            <span class="badge-orange">{{ p.status }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if p.gateway_payment_url %}
+            <a href="{{ p.gateway_payment_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-glass">
+              <i class="fa fa-external-link"></i> لینک درگاه کارت‌گذر
+            </a>
+          {% elif p.ref_id %}
+            <code>{{ p.ref_id }}</code>
+          {% elif p.track_id %}
+            <code>{{ p.track_id }}</code>
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td><small>{{ p.created_at }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="empty-text">تراکنشی برای این کاربر ثبت نشده است.</p>
+  {% endif %}
+</div>
 {% endblock %}

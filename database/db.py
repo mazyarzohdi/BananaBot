@@ -801,6 +801,38 @@ class Database:
         chats.append({"chat_id": chat_id, "message_id": message_id})
         await self.set_payment_notif_chats(payment_id, chats)
 
+    async def get_user_payments(self, user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+        return await self._fetchall(
+            "SELECT py.*, p.name as product_name, rp.name as reseller_plan_name "
+            "FROM payments py "
+            "LEFT JOIN products p ON py.product_id = p.id "
+            "LEFT JOIN reseller_plans rp ON py.reseller_plan_id = rp.id "
+            "WHERE py.user_id = ? "
+            "ORDER BY py.id DESC "
+            "LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        )
+
+    async def get_user_payments_count(self, user_id: int) -> int:
+        row = await self._fetchone(
+            "SELECT COUNT(*) as c FROM payments WHERE user_id = ?", (user_id,)
+        )
+        return row["c"] if row else 0
+
+    async def claim_admin_payment_notified(self, payment_id: int) -> bool:
+        """Atomically marks admin_notified=1. Returns True only once per payment.
+        Prevents duplicate admin notifications across concurrent handlers."""
+        conn = await self.connect()
+        try:
+            cursor = await conn.execute(
+                "UPDATE payments SET admin_notified = 1 WHERE id = ? AND (admin_notified IS NULL OR admin_notified = 0)",
+                (payment_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
     # --- FAQ ---
     async def get_faqs(self) -> list[dict]:
         return await self._fetchall(

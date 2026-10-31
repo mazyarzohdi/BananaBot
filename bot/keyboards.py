@@ -540,6 +540,9 @@ def user_admin_card_inline(tid: int, banned: bool, reseller_id: int | None = Non
                 InlineKeyboardButton(text="➕ افزایش موجودی", callback_data=f"uadm_addbal:{tid}"),
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
+            [
+                InlineKeyboardButton(text="💳 تاریخچه پرداختی‌ها", callback_data=f"uadm_pays:{tid}"),
+            ],
             [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
             [reseller_btn],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
@@ -767,7 +770,9 @@ def reseller_delete_confirm_inline(reseller_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1, reseller_id: int | None = None) -> InlineKeyboardMarkup:
+def user_admin_card_inline_with_back(
+    tid: int, banned: bool, back_page: int = 1, reseller_id: int | None = None, search: str = ""
+) -> InlineKeyboardMarkup:
     """کارت کاربر با دکمه بازگشت به لیست."""
     ban_btn = (
         InlineKeyboardButton(text="✅ آن‌بن کردن", callback_data=f"uadm_unban:{tid}")
@@ -789,12 +794,55 @@ def user_admin_card_inline_with_back(tid: int, banned: bool, back_page: int = 1,
                 InlineKeyboardButton(text="➕ افزایش موجودی", callback_data=f"uadm_addbal:{tid}"),
                 InlineKeyboardButton(text="➖ کاهش موجودی", callback_data=f"uadm_subbal:{tid}"),
             ],
+            [
+                InlineKeyboardButton(text="💳 تاریخچه پرداختی‌ها", callback_data=f"uadm_pays:{tid}:{back_page}:{search}"),
+            ],
             [ban_btn, InlineKeyboardButton(text="📝 یادداشت", callback_data=f"uadm_note:{tid}")],
             [reseller_btn],
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"uadm_refresh:{tid}")],
-            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"ulist_page:{back_page}:")],
+            [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"ulist_page:{back_page}:{search}")],
         ]
     )
+
+
+def user_payments_admin_inline(
+    tid: int,
+    payments: list[dict],
+    back_page: int = 1,
+    search: str = "",
+    page: int = 1,
+    total_pages: int = 1,
+) -> InlineKeyboardMarkup:
+    """کیبورد شیشه‌ای لیست پرداختی‌های کاربر شامل لینک مستقیم درگاه و بازگشت."""
+    rows = []
+
+    # Direct links to CardGozar invoices if available
+    for p in payments:
+        url = p.get("gateway_payment_url")
+        if url and url.startswith("http"):
+            status_icon = "✅" if p.get("status") == "approved" else ("⏳" if p.get("status") == "pending" else "🔹")
+            rows.append([
+                InlineKeyboardButton(text=f"{status_icon} درگاه کارت‌گذر پرداخت #{p['id']}", url=url)
+            ])
+
+    # Pagination row
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"uadm_pays_pg:{tid}:{page - 1}:{back_page}:{search}"))
+        nav_row.append(InlineKeyboardButton(text=f"📄 {page}/{total_pages}", callback_data="ulist_noop"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"uadm_pays_pg:{tid}:{page + 1}:{back_page}:{search}"))
+        rows.append(nav_row)
+
+    rows.append([
+        InlineKeyboardButton(text="🔙 بازگشت به مشخصات کاربر", callback_data=f"ulist_view:{tid}:{back_page}:{search}")
+    ])
+    if back_page:
+        rows.append([
+            InlineKeyboardButton(text="👥 بازگشت به لیست کاربران", callback_data=f"ulist_page:{back_page}:{search}")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_reseller_confirm_inline(tid: int) -> InlineKeyboardMarkup:

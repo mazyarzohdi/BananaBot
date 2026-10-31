@@ -231,9 +231,10 @@ def admin_user_detail(request: HttpRequest, telegram_id: int):
     user = bot_db.get_user_by_telegram_id(telegram_id)
     reseller = bot_db.get_reseller_by_user_id(user["id"])
     panels = bot_db.get_panels(active_only=True)
+    payments = bot_db.get_user_payments(user["id"], limit=50)
     return render(request, "admin/user_detail.html", {
         "u": user, "subscriptions": subscriptions, "is_admin": True,
-        "reseller": reseller, "panels": panels,
+        "reseller": reseller, "panels": panels, "payments": payments,
     })
 
 
@@ -463,6 +464,11 @@ def admin_payment_detail(request: HttpRequest, payment_id: int):
         if action == "approve":
             if bot_db.approve_payment(payment_id, note, handled_by=admin_tid):
                 _notify_payment_status(payment, "approved", note)
+                try:
+                    from services.payment_notifier import notify_admins_payment_success_sync
+                    notify_admins_payment_success_sync(payment_id)
+                except Exception:
+                    pass
                 messages.success(request, "پرداخت تأیید و موجودی شارژ شد. به کاربر اطلاع داده شد.")
             else:
                 messages.warning(request, "این پرداخت قبلاً بررسی شده بود.")
@@ -1333,6 +1339,12 @@ def _notify_cardgozar_approved(conn, payment: dict, ref_id: str):
         logger.info("Sent CardGozar approval telegram notification to %s for payment #%s", telegram_id, payment["id"])
     except Exception as exc:
         logger.warning("Failed to send CardGozar approval telegram message to %s: %s", telegram_id, exc)
+
+    try:
+        from services.payment_notifier import notify_admins_payment_success_sync
+        notify_admins_payment_success_sync(payment["id"])
+    except Exception as exc:
+        logger.warning("Failed to send CardGozar admin notification: %s", exc)
 
 
 @csrf_exempt

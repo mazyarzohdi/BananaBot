@@ -861,6 +861,39 @@ def reject_payment(payment_id: int, admin_note: str = "", handled_by: int | None
         return cur.rowcount > 0
 
 
+def get_user_payments(user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT py.*, p.name as product_name, rp.name as reseller_plan_name "
+            "FROM payments py "
+            "LEFT JOIN products p ON py.product_id = p.id "
+            "LEFT JOIN reseller_plans rp ON py.reseller_plan_id = rp.id "
+            "WHERE py.user_id = ? "
+            "ORDER BY py.id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+def get_user_payments_count(user_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM payments WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def claim_admin_payment_notified(payment_id: int) -> bool:
+    """Atomically sets admin_notified = 1. Returns True if successfully transitioned."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE payments SET admin_notified = 1 WHERE id = ? AND (admin_notified IS NULL OR admin_notified = 0)",
+            (payment_id,),
+        )
+        return cur.rowcount > 0
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 def get_orders_page(page: int, per_page: int = 20) -> tuple[list[dict], int]:

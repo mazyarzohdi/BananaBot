@@ -102,6 +102,13 @@ async def _do_fulfill_payment(bot: Bot, db, payment_id: int, payment: dict) -> d
         await db._execute("UPDATE payments SET handled_by = -2 WHERE id = ?", (payment_id,))
         return {"status": "error", "message": "user_not_found"}
 
+    # Notify admins immediately of successful payment (idempotent)
+    try:
+        from services.payment_notifier import notify_admins_payment_success
+        await notify_admins_payment_success(bot, db, payment_id)
+    except Exception:
+        logger.exception("Failed to notify admins of successful payment #%s", payment_id)
+
     telegram_id = int(user["telegram_id"])
     sub_service = SubscriptionService()
 

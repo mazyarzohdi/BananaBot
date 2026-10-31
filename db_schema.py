@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS payments (
     gateway_ref_id TEXT DEFAULT NULL,
     gateway_payer_card TEXT DEFAULT NULL,
     expires_at TEXT DEFAULT NULL,
+    admin_notified INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (order_id) REFERENCES orders(id)
@@ -405,6 +406,7 @@ MIGRATIONS = [
     "ALTER TABLE payments ADD COLUMN renew_sub_id INTEGER",
     "ALTER TABLE payments ADD COLUMN coupon_code TEXT DEFAULT NULL",
     "ALTER TABLE payments ADD COLUMN discount_amount INTEGER DEFAULT 0",
+    "ALTER TABLE payments ADD COLUMN admin_notified INTEGER DEFAULT 0",
 ]
 
 

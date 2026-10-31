@@ -58,6 +58,7 @@ from bot.keyboards import (
     resellers_admin_inline,
     user_admin_card_inline,
     user_admin_card_inline_with_back,
+    user_payments_admin_inline,
     users_list_inline,
     referral_broadcast_confirm_inline,
     admin_payment_gateways_inline,
@@ -1261,6 +1262,11 @@ async def pay_confirm(callback: CallbackQuery, is_admin: bool):
         callback.bot, db, payment,
         _payment_status_text(payment, "approved", callback.from_user.id),
     )
+    try:
+        from services.payment_notifier import notify_admins_payment_success
+        await notify_admins_payment_success(callback.bot, db, payment_id)
+    except Exception:
+        logger.exception("Failed to notify admins of manual approval for #%s", payment_id)
     await callback.answer("✅ تأیید شد.")
 
 
@@ -1411,6 +1417,7 @@ async def ulist_view_user(callback: CallbackQuery):
     parts = callback.data.split(":")
     tid = int(parts[1])
     back_page = int(parts[2]) if len(parts) > 2 else 1
+    search = parts[3] if len(parts) > 3 else ""
     db = get_db()
     text, _ = await _render_user_card(db, tid)
     if not text:
@@ -1422,8 +1429,150 @@ async def ulist_view_user(callback: CallbackQuery):
     reseller_id = reseller["id"] if reseller else None
     await callback.message.edit_text(
         text,
-        reply_markup=user_admin_card_inline_with_back(tid, banned, back_page=back_page, reseller_id=reseller_id),
+        reply_markup=user_admin_card_inline_with_back(
+            tid, banned, back_page=back_page, reseller_id=reseller_id, search=search
+        ),
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("uadm_pays:"))
+@router.callback_query(F.data.startswith("uadm_pays_pg:"))
+async def uadm_user_payments(callback: CallbackQuery):
+    if callback.from_user.id not in get_settings().admin_ids:
+        return
+    parts = callback.data.split(":")
+    is_pg = parts[0] == "uadm_pays_pg"
+    if is_pg:
+        # uadm_pays_pg:{tid}:{page}:{back_page}:{search}
+        tid = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 1
+        back_page = int(parts[3]) if len(parts) > 3 else 1
+        search = parts[4] if len(parts) > 4 else ""
+    else:
+        # uadm_pays:{tid} or uadm_pays:{tid}:{back_page}:{search}
+        tid = int(parts[1])
+        page = 1
+        back_page = int(parts[2]) if len(parts) > 2 else 1
+        search = parts[3] if len(parts) > 3 else ""
+
+    db = get_db()
+    user = await db.get_user_by_telegram_id(tid)
+    if not user:
+        await callback.answer("کاربر پیدا نشد.", show_alert=True)
+        return
+
+    PER_PAGE = 5
+    total_payments = await db.get_user_payments_count(user["id"])
+    total_pages = max(1, -(-total_payments // PER_PAGE))
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * PER_PAGE
+
+    payments = await db.get_user_payments(user["id"], limit=PER_PAGE, offset=offset)
+
+    full_name = html.escape(user.get("full_name") or "—")
+    uname = user.get("username")
+    username_str = f"@{html.escape(uname)}" if uname else "— (ندارد)"
+
+    approved_row = await db._fetchone(
+        "SELECT COALESCE(SUM(amount), 0) as s, COUNT(*) as c FROM payments WHERE user_id = ? AND status = 'approved'",
+        (user["id"],)
+    )
+    approved_sum = approved_row["s"] if approved_row else 0
+    approved_cnt = approved_row["c"] if approved_row else 0
+
+    status_emojis = {
+        "approved": "✅ تأیید شده",
+        "pending": "⏳ در انتظار",
+        "rejected": "❌ رد شده",
+        "expired": "⏰ منقضی شده",
+        "cancelled": "🚫 لغو شده",
+    }
+    method_names = {
+        "cardgozar": "🚀 درگاه کارت‌گذر",
+        "card": "💳 کارت به کارت دستی",
+        "auto_card": "🤖 پیامک بانکی",
+        "balance": "💰 کیف پول",
+    }
+
+    lines = [
+        f"💳 <b>تاریخچه پرداختی‌های کاربر</b>\n",
+        f"👤 <b>کاربر:</b> {full_name} ({username_str})",
+        f"🆔 <b>چت‌آیدی تلگرام:</b> <code>{tid}</code>",
+        f"💰 <b>موجودی فعلی:</b> {user['balance']:,} تومان",
+        f"📊 <b>آمار کل:</b> {total_payments} تراکنش ({approved_cnt} موفق به مبلغ {approved_sum:,} تومان)\n",
+        "────────────────────",
+    ]
+
+    if not payments:
+        lines.append("<i>هیچ پرداختی برای این کاربر ثبت نشده است.</i>")
+    else:
+        for p in payments:
+            st = status_emojis.get(p.get("status"), p.get("status"))
+            m = method_names.get(p.get("payment_method"), p.get("payment_method"))
+            amt = p.get("amount") or 0
+
+            if p.get("product_name"):
+                purpose = f"خرید سرویس {p['product_name']}"
+            elif p.get("product_id"):
+                purpose = f"خرید محصول #{p['product_id']}"
+            elif p.get("renew_sub_id"):
+                purpose = f"تمدید سرویس #{p['renew_sub_id']}"
+            elif p.get("reseller_plan_name"):
+                purpose = f"نمایندگی {p['reseller_plan_name']}"
+            elif p.get("reseller_plan_id"):
+                purpose = f"نمایندگی #{p['reseller_plan_id']}"
+            else:
+                purpose = "افزایش موجودی"
+
+            p_lines = [
+                f"🔹 <b>پرداخت #{p['id']}</b> — <b>{amt:,} تومان</b>",
+                f"• <b>وضعیت:</b> {st} | <b>روش:</b> {m}",
+                f"• <b>بابت:</b> {purpose}",
+            ]
+
+            if p.get("payment_method") == "cardgozar" or p.get("gateway_payment_url") or p.get("gateway_ref_id"):
+                ref = p.get("gateway_ref_id") or ""
+                track = p.get("gateway_tracking_code") or ""
+                card_p = p.get("gateway_payer_card") or ""
+                gw_url = p.get("gateway_payment_url") or ""
+                gw_details = []
+                if ref:
+                    gw_details.append(f"پیگیری: <code>{html.escape(ref)}</code>")
+                if track:
+                    gw_details.append(f"شناسه واریز: <code>{html.escape(track)}</code>")
+                if card_p:
+                    gw_details.append(f"کارت: <code>{html.escape(card_p)}</code>")
+                if gw_details:
+                    p_lines.append(f"• <b>درگاه:</b> {' | '.join(gw_details)}")
+                if gw_url:
+                    p_lines.append(f"• <b>لینک پرداخت:</b> {gw_url}")
+
+            if p.get("coupon_code"):
+                p_lines.append(f"• <b>کوپن:</b> <code>{html.escape(p['coupon_code'])}</code>")
+
+            if p.get("created_at"):
+                p_lines.append(f"• <b>زمان:</b> <code>{p['created_at']}</code>")
+
+            if p.get("admin_note"):
+                p_lines.append(f"• 📝 یادداشت: <i>{html.escape(p['admin_note'])}</i>")
+
+            lines.append("\n".join(p_lines))
+            lines.append("────────────────────")
+
+    text = "\n".join(lines)
+    markup = user_payments_admin_inline(
+        tid=tid,
+        payments=payments,
+        back_page=back_page,
+        search=search,
+        page=page,
+        total_pages=total_pages,
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=markup, parse_mode="HTML")
     await callback.answer()
 
 

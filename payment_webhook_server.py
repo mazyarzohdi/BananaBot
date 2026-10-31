@@ -431,6 +431,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         notify_payment_approved(payment)
+        try:
+            from services.payment_notifier import notify_admins_payment_success_sync
+            notify_admins_payment_success_sync(payment["id"])
+        except Exception as notify_err:
+            logger.warning("Could not send admin payment alert from webhook server: %s", notify_err)
         logger.info("Auto-approved payment #%s for %s rial.", payment["id"], amount_rial)
         self._json_response(200, {
             "ok": True, "matched": True,
