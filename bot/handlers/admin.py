@@ -2534,6 +2534,18 @@ async def cfg_pg_set_mode(callback: CallbackQuery, state: FSMContext):
     new_mode = callback.data.split(":", 1)[1]
     db = get_db()
     await db.set_setting("payment_method_mode", new_mode)
+    if new_mode == "both":
+        await db.set_setting("cardgozar_enabled", "1")
+        await db.set_setting("card_payment_enabled", "1")
+    elif new_mode == "cardgozar":
+        await db.set_setting("cardgozar_enabled", "1")
+        await db.set_setting("card_payment_enabled", "0")
+    elif new_mode == "card":
+        await db.set_setting("cardgozar_enabled", "0")
+        await db.set_setting("card_payment_enabled", "1")
+    elif new_mode == "none":
+        await db.set_setting("cardgozar_enabled", "0")
+        await db.set_setting("card_payment_enabled", "0")
     await callback.answer("✅ روش پرداخت به‌روز شد.")
     await cfg_pg_menu(callback, state)
 
@@ -2545,6 +2557,15 @@ async def cfg_pg_toggle_cg(callback: CallbackQuery, state: FSMContext):
     current = await db.get_setting("cardgozar_enabled", "1")
     new_val = "0" if current == "1" else "1"
     await db.set_setting("cardgozar_enabled", new_val)
+    card_on = (await db.get_setting("card_payment_enabled", "1")) == "1"
+    if new_val == "1" and card_on:
+        await db.set_setting("payment_method_mode", "both")
+    elif new_val == "1":
+        await db.set_setting("payment_method_mode", "cardgozar")
+    elif card_on:
+        await db.set_setting("payment_method_mode", "card")
+    else:
+        await db.set_setting("payment_method_mode", "none")
     status_str = "فعال" if new_val == "1" else "غیرفعال"
     await callback.answer(f"✅ درگاه کارت‌گذر {status_str} شد.")
     await cfg_pg_menu(callback, state)
@@ -2557,6 +2578,15 @@ async def cfg_pg_toggle_card(callback: CallbackQuery, state: FSMContext):
     current = await db.get_setting("card_payment_enabled", "1")
     new_val = "0" if current == "1" else "1"
     await db.set_setting("card_payment_enabled", new_val)
+    cg_on = (await db.get_setting("cardgozar_enabled", "1")) == "1"
+    if new_val == "1" and cg_on:
+        await db.set_setting("payment_method_mode", "both")
+    elif new_val == "1":
+        await db.set_setting("payment_method_mode", "card")
+    elif cg_on:
+        await db.set_setting("payment_method_mode", "cardgozar")
+    else:
+        await db.set_setting("payment_method_mode", "none")
     status_str = "فعال" if new_val == "1" else "غیرفعال"
     await callback.answer(f"✅ کارت به کارت دستی (ارسال فیش) {status_str} شد.")
     await cfg_pg_menu(callback, state)

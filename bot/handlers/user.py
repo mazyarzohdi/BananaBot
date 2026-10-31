@@ -194,42 +194,22 @@ async def _send_card_payment_instructions(
 
 async def _get_payment_mode(db) -> str:
     """Returns the effective active payment method mode: 'both', 'cardgozar', 'card', or 'none'.
-    Respects admin toggles and mode choice.
+    If both CardGozar and manual card payments are enabled by the admin, both are shown.
     """
     mode = await db.get_setting("payment_method_mode", "both")
+    if mode == "none":
+        return "none"
 
     cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
     card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
 
-    if mode == "none":
-        return "none"
-    elif mode == "cardgozar":
-        if cg_enabled:
-            return "cardgozar"
-        elif card_enabled:
-            return "card"
-        return "none"
-    elif mode == "card":
-        if card_enabled:
-            return "card"
-        elif cg_enabled:
-            return "cardgozar"
-        return "none"
-    elif mode == "both":
-        if cg_enabled and card_enabled:
-            return "both"
-        elif cg_enabled:
-            return "cardgozar"
-        elif card_enabled:
-            return "card"
-        return "none"
+    if cg_enabled and card_enabled:
+        return "both"
+    elif cg_enabled:
+        return "cardgozar"
+    elif card_enabled:
+        return "card"
     else:
-        if cg_enabled and card_enabled:
-            return "both"
-        elif cg_enabled:
-            return "cardgozar"
-        elif card_enabled:
-            return "card"
         return "none"
 
 
