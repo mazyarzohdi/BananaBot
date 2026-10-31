@@ -310,6 +310,23 @@ CREATE TABLE IF NOT EXISTS referral_earnings (
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 
+-- لاگ خطاهای سمت کاربر (فرانت‌اند مینی‌اپ، وب پنل و ربات تلگرام) برای عیب‌یابی و پیگیری
+CREATE TABLE IF NOT EXISTS user_error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracking_code TEXT UNIQUE NOT NULL,
+    source TEXT NOT NULL,
+    user_id INTEGER DEFAULT NULL,
+    telegram_id INTEGER DEFAULT NULL,
+    severity TEXT NOT NULL DEFAULT 'error',
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    stack_trace TEXT DEFAULT '',
+    request_url TEXT DEFAULT '',
+    client_info TEXT DEFAULT '{}',
+    resolved INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 """
 
 
@@ -368,6 +385,8 @@ DEFAULT_SETTINGS = {
     "backup_schedule_interval_hours": "24",
     "backup_schedule_retention_count": "14",
     "backup_last_run_at": "0",
+    "error_alerts_enabled": "1",
+    "error_retention_days": "30",
 }
 
 # Historical migrations that predate the generic column-reconciler below, or

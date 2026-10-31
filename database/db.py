@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import secrets
@@ -1358,6 +1358,82 @@ class Database:
         return await self._fetchall(
             "SELECT py.*, u.telegram_id, u.username FROM payments py "
             "JOIN users u ON py.user_id = u.id ORDER BY py.id ASC"
+        )
+
+    # --- User Error Logs ---
+    async def insert_user_error_log(
+        self,
+        tracking_code: str,
+        source: str,
+        error_type: str,
+        error_message: str,
+        stack_trace: str = "",
+        user_id: int | None = None,
+        telegram_id: int | None = None,
+        severity: str = "error",
+        request_url: str = "",
+        client_info: str = "{}",
+    ) -> int:
+        return await self._execute(
+            """INSERT INTO user_error_logs
+               (tracking_code, source, user_id, telegram_id, severity, error_type,
+                error_message, stack_trace, request_url, client_info)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                tracking_code,
+                source,
+                user_id,
+                telegram_id,
+                severity,
+                error_type,
+                error_message,
+                stack_trace,
+                request_url,
+                client_info,
+            ),
+        )
+
+    async def get_user_error_logs(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        source: str | None = None,
+        search: str | None = None,
+        resolved: int | None = None,
+    ) -> list[dict]:
+        conditions = []
+        params = []
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        if resolved is not None:
+            conditions.append("resolved = ?")
+            params.append(resolved)
+        if search:
+            conditions.append("(tracking_code LIKE ? OR error_message LIKE ? OR error_type LIKE ? OR CAST(telegram_id AS TEXT) LIKE ?)")
+            p = f"%{search}%"
+            params.extend([p, p, p, p])
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM user_error_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        return await self._fetchall(query, tuple(params))
+
+    async def get_user_error_log_by_code(self, tracking_code: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM user_error_logs WHERE tracking_code = ?", (tracking_code,)
+        )
+
+    async def mark_user_error_resolved(self, log_id: int, resolved: bool = True) -> bool:
+        res = await self._execute(
+            "UPDATE user_error_logs SET resolved = ? WHERE id = ?",
+            (1 if resolved else 0, log_id),
+        )
+        return res > 0
+
+    async def cleanup_old_error_logs(self, days: int = 30) -> int:
+        return await self._execute(
+            "DELETE FROM user_error_logs WHERE datetime(created_at) < datetime('now', ?)",
+            (f"-{days} days",),
         )
 
 

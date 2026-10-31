@@ -90,6 +90,13 @@
   <h1>{{ title|default:"عملیات انجام نشد" }}</h1>
   <p class="subtitle">{{ message|default:"در ارتباط با سرور خطایی رخ داده است. لطفاً به ربات تلگرام بازگردید." }}</p>
 
+  {% if tracking_code %}
+    <div style="background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.35); border-radius: 0.85rem; padding: 0.85rem 1rem; margin-bottom: 1.5rem; text-align: center;">
+      <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">کد پیگیری جهت ارائه به پشتیبانی:</div>
+      <div style="font-family: monospace; font-size: 1.15rem; font-weight: 700; color: #38bdf8; letter-spacing: 1px;">{{ tracking_code }}</div>
+    </div>
+  {% endif %}
+
   {% if bot_username %}
     <a href="https://t.me/{{ bot_username }}" class="btn btn-primary">
       <i class="fa-brands fa-telegram"></i> بازگشت به ربات تلگرام

@@ -1,4 +1,4 @@
-﻿"""Synchronous SQLite helpers for the web panel.
+"""Synchronous SQLite helpers for the web panel.
 
 The bot uses aiosqlite (async). The web panel uses the same .db file
 but accesses it via the standard synchronous sqlite3 module — so no
@@ -1056,3 +1056,116 @@ def get_api_logs(reseller_id: int, limit: int = 50) -> list[dict]:
             (reseller_id, limit),
         ).fetchall()
     return rows_to_list(rows)
+
+
+# ── User Error Logs ──────────────────────────────────────────────────────────
+
+def insert_user_error_log(
+    tracking_code: str,
+    source: str,
+    error_type: str,
+    error_message: str,
+    stack_trace: str = "",
+    user_id: int | None = None,
+    telegram_id: int | None = None,
+    severity: str = "error",
+    request_url: str = "",
+    client_info: str = "{}",
+) -> int:
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """INSERT INTO user_error_logs
+               (tracking_code, source, user_id, telegram_id, severity, error_type,
+                error_message, stack_trace, request_url, client_info)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                tracking_code,
+                source,
+                user_id,
+                telegram_id,
+                severity,
+                error_type,
+                error_message,
+                stack_trace,
+                request_url,
+                client_info,
+            ),
+        )
+        return getattr(cursor, "lastrowid", 0) or 0
+
+
+def get_user_error_logs(
+    limit: int = 50,
+    offset: int = 0,
+    source: str | None = None,
+    search: str | None = None,
+    resolved: int | None = None,
+) -> list[dict]:
+    conditions = []
+    params = []
+    if source:
+        conditions.append("source = ?")
+        params.append(source)
+    if resolved is not None:
+        conditions.append("resolved = ?")
+        params.append(resolved)
+    if search:
+        conditions.append("(tracking_code LIKE ? OR error_message LIKE ? OR error_type LIKE ? OR CAST(telegram_id AS TEXT) LIKE ?)")
+        p = f"%{search}%"
+        params.extend([p, p, p, p])
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"SELECT * FROM user_error_logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    with get_conn() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return rows_to_list(rows)
+
+
+def get_user_error_logs_count(
+    source: str | None = None,
+    search: str | None = None,
+    resolved: int | None = None,
+) -> int:
+    conditions = []
+    params = []
+    if source:
+        conditions.append("source = ?")
+        params.append(source)
+    if resolved is not None:
+        conditions.append("resolved = ?")
+        params.append(resolved)
+    if search:
+        conditions.append("(tracking_code LIKE ? OR error_message LIKE ? OR error_type LIKE ? OR CAST(telegram_id AS TEXT) LIKE ?)")
+        p = f"%{search}%"
+        params.extend([p, p, p, p])
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"SELECT COUNT(*) FROM user_error_logs {where_clause}"
+    with get_conn() as conn:
+        row = conn.execute(query, tuple(params)).fetchone()
+    return row[0] if row else 0
+
+
+def get_user_error_log_by_code(tracking_code: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_error_logs WHERE tracking_code = ?", (tracking_code,)
+        ).fetchone()
+    return row_to_dict(row)
+
+
+def mark_user_error_resolved(log_id: int, resolved: bool = True) -> bool:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE user_error_logs SET resolved = ? WHERE id = ?",
+            (1 if resolved else 0, log_id),
+        )
+    return True
+
+
+def cleanup_old_error_logs(days: int = 30) -> int:
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_error_logs WHERE datetime(created_at) < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        return getattr(cursor, "rowcount", 0) or 0

@@ -1,7 +1,9 @@
-﻿"""Views for BananaBot Web Panel."""
+"""Views for BananaBot Web Panel."""
 
 import json
 import logging
+import secrets
+import threading
 import time
 from datetime import datetime
 from django.shortcuts import render, redirect
@@ -524,6 +526,8 @@ SETTINGS_META = {
     "channel_required":    {"label": "🔒 کانال اجباری (ID)",        "type": "text"},
     "channel_invite_link": {"label": "🔗 لینک دعوت کانال",          "type": "text"},
     "min_deposit":         {"label": "💰 حداقل شارژ (تومان)",       "type": "text"},
+    "error_alerts_enabled": {"label": "🚨 ارسال هشدار خطای ربات به ادمین در تلگرام (1=فعال/0=غیر)", "type": "text"},
+    "error_retention_days": {"label": "🗑 مدت نگه‌داری لاگ‌های خطا (روز)", "type": "text"},
 }
 
 
@@ -1549,14 +1553,171 @@ def custom_error_404(request, exception=None):
         return HttpResponse("<h1>۴۰۴ - صفحه یافت نشد</h1>", status=404, content_type="text/html; charset=utf-8")
 
 
+# In-memory rate limiting for client-reported JS errors (IP -> (timestamp, count))
+_client_error_rate: dict[str, tuple[float, int]] = {}
+_client_error_lock = threading.Lock()
+
+
+@csrf_exempt
+@require_POST
+def log_client_error(request: HttpRequest):
+    """Endpoint for frontend and Telegram Mini App to report unhandled JavaScript errors."""
+    ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "")
+    now = time.time()
+    with _client_error_lock:
+        last_time, count = _client_error_rate.get(ip, (now, 0))
+        if now - last_time < 60:
+            if count >= 15:
+                return JsonResponse({"ok": False, "error": "rate_limited"}, status=429)
+            _client_error_rate[ip] = (last_time, count + 1)
+        else:
+            _client_error_rate[ip] = (now, 1)
+
+    try:
+        data = json.loads(request.body.decode("utf-8") if request.body else "{}")
+    except Exception:
+        return JsonResponse({"ok": False, "error": "invalid_json"}, status=400)
+
+    message = str(data.get("message") or "").strip()
+    if not message:
+        return JsonResponse({"ok": False, "error": "message_required"}, status=400)
+
+    error_type = str(data.get("error_type") or "ClientError")[:100]
+    stack = str(data.get("stack") or "")[:5000]
+    url = str(data.get("url") or "")[:500]
+
+    tg_user = get_current_user(request)
+    telegram_id = int(tg_user["id"]) if (tg_user and "id" in tg_user) else None
+    user_id = None
+    if telegram_id:
+        try:
+            with bot_db.get_conn() as conn:
+                u_row = conn.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+                if u_row:
+                    user_id = u_row["id"]
+        except Exception:
+            pass
+
+    client_info = {
+        "platform": data.get("platform", "browser"),
+        "tg_version": data.get("tg_version", ""),
+        "viewport": data.get("viewport", ""),
+        "user_agent": data.get("user_agent", "") or request.META.get("HTTP_USER_AGENT", "")[:255],
+        "ip": ip,
+        "line": data.get("line"),
+        "col": data.get("col"),
+    }
+
+    tracking_code = f"ERR-{secrets.token_hex(3).upper()}"
+    try:
+        bot_db.insert_user_error_log(
+            tracking_code=tracking_code,
+            source="webapp_js",
+            error_type=error_type,
+            error_message=message[:1000],
+            stack_trace=stack,
+            user_id=user_id,
+            telegram_id=telegram_id,
+            severity="error",
+            request_url=url,
+            client_info=json.dumps(client_info, ensure_ascii=False),
+        )
+    except Exception as exc:
+        logger.warning("Failed to insert client error log: %s", exc)
+
+    return JsonResponse({"ok": True, "tracking_code": tracking_code})
+
+
+@admin_required
+def admin_errors(request: HttpRequest):
+    """Admin dashboard to view, filter, and inspect user/client error logs."""
+    source = request.GET.get("source") or None
+    search = request.GET.get("q") or None
+    resolved_param = request.GET.get("resolved")
+    resolved = int(resolved_param) if resolved_param in ("0", "1") else None
+
+    try:
+        page = max(1, int(request.GET.get("page", 1)))
+    except ValueError:
+        page = 1
+    page_size = 25
+    offset = (page - 1) * page_size
+
+    logs = bot_db.get_user_error_logs(
+        limit=page_size,
+        offset=offset,
+        source=source,
+        search=search,
+        resolved=resolved,
+    )
+    total_count = bot_db.get_user_error_logs_count(
+        source=source,
+        search=search,
+        resolved=resolved,
+    )
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+    for log in logs:
+        try:
+            log["client_info_parsed"] = json.loads(log.get("client_info") or "{}")
+        except Exception:
+            log["client_info_parsed"] = {}
+
+    return render(
+        request,
+        "admin/errors.html",
+        {
+            "logs": logs,
+            "total_count": total_count,
+            "page": page,
+            "total_pages": total_pages,
+            "source": source or "",
+            "search": search or "",
+            "resolved": resolved_param or "",
+        },
+    )
+
+
+@admin_required
+@require_POST
+def admin_error_resolve(request: HttpRequest, log_id: int):
+    """Mark an error as resolved or unresolved."""
+    resolved = request.POST.get("resolved", "1") == "1"
+    bot_db.mark_user_error_resolved(log_id, resolved)
+    messages.success(request, "وضعیت خطا به‌روزرسانی شد.")
+    return redirect(request.META.get("HTTP_REFERER") or "panel:admin_errors")
+
+
 def custom_error_500(request):
     bot_username = bot_db.get_setting("bot_username", "")
+    tracking_code = getattr(request, "_error_tracking_code", None)
+    if not tracking_code:
+        tracking_code = f"ERR-{secrets.token_hex(3).upper()}"
+        try:
+            tg_user = get_current_user(request)
+            telegram_id = int(tg_user["id"]) if (tg_user and "id" in tg_user) else None
+            bot_db.insert_user_error_log(
+                tracking_code=tracking_code,
+                source="web_backend",
+                error_type="Server500",
+                error_message="Unhandled server 500 error",
+                request_url=request.build_absolute_uri(),
+                telegram_id=telegram_id,
+                severity="critical",
+            )
+        except Exception:
+            pass
+
     try:
         return render(request, "shared/error.html", {
             "title": "خطایی در پردازش رخ داد",
-            "message": "سیستم در پردازش این درخواست با مشکلی مواجه شد. لطفاً به ربات تلگرام بازگردید.",
+            "message": "سیستم در پردازش این درخواست با مشکلی مواجه شد. در صورت تکرار، کد پیگیری زیر را به پشتیبانی اعلام فرمایید.",
             "bot_username": bot_username,
+            "tracking_code": tracking_code,
         }, status=500)
     except Exception:
-        return HttpResponse("<h1>خطایی رخ داد. لطفاً به ربات تلگرام بازگردید.</h1>", status=500, content_type="text/html; charset=utf-8")
+        return HttpResponse(
+            f"<h1>خطایی رخ داد. کد پیگیری: {tracking_code}</h1>",
+            status=500, content_type="text/html; charset=utf-8"
+        )
 

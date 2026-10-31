@@ -65,6 +65,7 @@ MIDDLEWARE.extend([
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "panel.middleware.TelegramEmbedMiddleware",
+    "panel.middleware.ExceptionLoggingMiddleware",
 ])
 
 ROOT_URLCONF = "bananabot_web.urls"
@@ -205,3 +206,54 @@ except Exception:
 
 # Web path prefix e.g. "/panel"
 WEB_PATH = os.environ.get("WEB_PATH", "/panel").rstrip("/")
+
+# ── Structured Logging & Rotation ─────────────────────────────────────────────
+LOGS_DIR = BOT_DIR / "data" / "logs"
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s",
+        },
+        "standard": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+        },
+        "file_errors": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(LOGS_DIR / "web_errors.log"),
+            "maxBytes": 5 * 1024 * 1024,  # 5 MB
+            "backupCount": 5,
+            "formatter": "verbose",
+            "encoding": "utf-8",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": True,
+        },
+        "django.request": {
+            "handlers": ["console", "file_errors"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "panel": {
+            "handlers": ["console", "file_errors"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

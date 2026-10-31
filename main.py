@@ -1,19 +1,24 @@
-﻿"""Application entry point."""
+"""Application entry point."""
 
 import asyncio
+import html
+import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
+import secrets
 import sqlite3
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BufferedInputFile, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BufferedInputFile, ErrorEvent, MenuButtonWebApp, WebAppInfo
 
 from bot.handlers import admin_router, user_router
 from bot.middlewares import ThrottlingMiddleware, UserMiddleware
@@ -24,10 +29,38 @@ from services.order_fulfillment import fulfill_payment
 from services.subscription import SubscriptionService
 from utils.helpers import format_expiry
 
+LOGS_DIR = Path(__file__).resolve().parent / "data" / "logs"
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+file_handler = RotatingFileHandler(
+    filename=str(LOGS_DIR / "bot.log"),
+    maxBytes=5 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+
+error_file_handler = RotatingFileHandler(
+    filename=str(LOGS_DIR / "bot_errors.log"),
+    maxBytes=5 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+error_file_handler.setLevel(logging.ERROR)
+error_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        file_handler,
+        error_file_handler,
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -397,6 +430,146 @@ async def _scheduled_backup_loop(bot: Bot, db):
 
 
 
+# In-memory cooldown for admin error alerts (signature -> timestamp) to avoid flood
+_admin_alert_cooldown: dict[str, float] = {}
+ERROR_CLEANUP_INTERVAL_SECONDS = 24 * 3600
+
+
+async def _error_logs_cleanup_loop(db):
+    """Periodically prunes old error logs from the user_error_logs table based on retention setting."""
+    while True:
+        try:
+            retention_str = await db.get_setting("error_retention_days", "30")
+            try:
+                retention_days = max(1, int(retention_str))
+            except ValueError:
+                retention_days = 30
+            deleted = await db.cleanup_old_error_logs(retention_days)
+            if deleted > 0:
+                logger.info("Pruned %d old error logs older than %d days.", deleted, retention_days)
+        except Exception:
+            logger.exception("Error logs cleanup loop failed")
+        await asyncio.sleep(ERROR_CLEANUP_INTERVAL_SECONDS)
+
+
+async def _global_error_handler(event: ErrorEvent, bot: Bot):
+    """Catches unhandled exceptions during update handling in Aiogram,
+    logs them to the database and rotating file, gives the user a friendly
+    message with a tracking code, and alerts admins if enabled."""
+    exception = event.exception
+    update = event.update
+    db = get_db()
+    settings = get_settings()
+
+    tracking_code = f"ERR-{secrets.token_hex(3).upper()}"
+    error_type = type(exception).__name__
+    error_message = str(exception) or error_type
+    tb_str = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+
+    user = None
+    chat_id = None
+    action_info = ""
+
+    if update.callback_query:
+        user = update.callback_query.from_user
+        chat_id = update.callback_query.message.chat.id if update.callback_query.message else user.id
+        action_info = f"CallbackQuery: {update.callback_query.data}"
+        try:
+            await update.callback_query.answer(
+                f"⚠️ خطایی رخ داد.\nکد پیگیری: {tracking_code}",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+    elif update.message:
+        user = update.message.from_user
+        chat_id = update.message.chat.id
+        action_info = f"Message: {update.message.text or update.message.caption or '<media>'}"
+    elif update.inline_query:
+        user = update.inline_query.from_user
+        action_info = f"InlineQuery: {update.inline_query.query}"
+
+    telegram_id = user.id if user else None
+    user_id = None
+    if telegram_id:
+        try:
+            db_u = await db._fetchone("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
+            if db_u:
+                user_id = db_u["id"]
+        except Exception:
+            pass
+
+    client_info = {
+        "action": action_info,
+        "username": user.username if user else None,
+        "full_name": user.full_name if user else None,
+    }
+
+    logger.error(
+        "Bot Exception [%s] for user %s during %s: %s\n%s",
+        tracking_code,
+        telegram_id,
+        action_info,
+        error_message,
+        tb_str,
+    )
+
+    try:
+        await db.insert_user_error_log(
+            tracking_code=tracking_code,
+            source="telegram_bot",
+            error_type=error_type,
+            error_message=error_message[:1000],
+            stack_trace=tb_str,
+            user_id=user_id,
+            telegram_id=telegram_id,
+            severity="error",
+            request_url=action_info[:500],
+            client_info=json.dumps(client_info, ensure_ascii=False),
+        )
+    except Exception as db_err:
+        logger.warning("Failed to save bot error log to DB: %s", db_err)
+
+    # Send polite message to user if it was a message update
+    if chat_id and update.message:
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ <b>خطایی در پردازش رخ داد</b>\n\n"
+                f"کد پیگیری خطا: <code>{tracking_code}</code>\n\n"
+                f"این خطا ثبت شد و توسط تیم پشتیبانی بررسی می‌شود. در صورت نیاز به پیگیری، این کد را به پشتیبانی ارائه فرمایید.",
+            )
+        except Exception:
+            pass
+
+    # Admin Instant Alerts (if enabled and not on cooldown)
+    try:
+        alerts_enabled = (await db.get_setting("error_alerts_enabled", "1")) == "1"
+        if alerts_enabled and settings.admin_ids:
+            now = time.time()
+            cooldown_key = f"{error_type}:{telegram_id}"
+            if now - _admin_alert_cooldown.get(cooldown_key, 0) > 60:
+                _admin_alert_cooldown[cooldown_key] = now
+                username_str = f"@{user.username}" if (user and user.username) else "ندارد"
+                safe_msg = html.escape(error_message[:250])
+                safe_action = html.escape(action_info[:150])
+                alert_text = (
+                    f"🚨 <b>خطای کاربر در ربات تلگرام</b>\n\n"
+                    f"▫️ <b>کد پیگیری:</b> <code>{tracking_code}</code>\n"
+                    f"▫️ <b>کاربر:</b> {username_str} (<code>{telegram_id or 'ناشناس'}</code>)\n"
+                    f"▫️ <b>اکشن:</b> <code>{safe_action}</code>\n"
+                    f"▫️ <b>نوع خطا:</b> <code>{error_type}</code>\n"
+                    f"▫️ <b>پیام:</b> <code>{safe_msg}</code>\n"
+                )
+                for admin_id in settings.admin_ids:
+                    try:
+                        await bot.send_message(admin_id, alert_text)
+                    except Exception:
+                        pass
+    except Exception as alert_err:
+        logger.debug("Failed sending admin error alert: %s", alert_err)
+
+
 async def main():
     settings = get_settings()
     if not settings.bot_token or settings.bot_token == "your_bot_token_here":
@@ -425,6 +598,7 @@ async def main():
     dp.callback_query.middleware(user_middleware)
     dp.include_router(admin_router)
     dp.include_router(user_router)
+    dp.errors.register(_global_error_handler)
 
     # Save the bot's own username so the web panel's "Login with Telegram"
     # widget (which needs data-telegram-login=<username>) always has it,
@@ -492,6 +666,7 @@ async def main():
     asyncio.create_task(_supervised_loop("ExpiryReminder", _expiry_reminder_loop, bot, db))
     asyncio.create_task(_supervised_loop("AutoRenew", _auto_renew_loop, bot, db))
     asyncio.create_task(_supervised_loop("ScheduledBackup", _scheduled_backup_loop, bot, db))
+    asyncio.create_task(_supervised_loop("ErrorLogsCleanup", _error_logs_cleanup_loop, db))
     await dp.start_polling(bot)
 
 

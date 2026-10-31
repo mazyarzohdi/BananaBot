@@ -23,6 +23,83 @@
     } catch (e) {}
   }
 
+  // ── Client Error Tracking (Telegram Mini App & Browser) ─────────────────
+  const reportedSignatures = new Set();
+  let errorCountThisSession = 0;
+  const MAX_ERRORS_PER_SESSION = 5;
+
+  window.reportClientError = function (errorInfo) {
+    if (errorCountThisSession >= MAX_ERRORS_PER_SESSION) return;
+
+    try {
+      const message = String((errorInfo && (errorInfo.message || errorInfo.error)) || 'Unknown Error');
+      const errorType = String((errorInfo && (errorInfo.type || errorInfo.errorType)) || 'ClientError');
+      const stack = String((errorInfo && errorInfo.stack) || '');
+      const url = String((errorInfo && errorInfo.url) || window.location.href);
+      const line = (errorInfo && errorInfo.line) || 0;
+      const col = (errorInfo && errorInfo.col) || 0;
+
+      // Filter noise: browser extension errors, ResizeObserver warnings, Script error
+      if (url.indexOf('chrome-extension://') !== -1 || url.indexOf('moz-extension://') !== -1) return;
+      if (message.indexOf('ResizeObserver loop') !== -1 || message === 'Script error.') return;
+
+      const signature = `${message}@${line}:${col}`;
+      if (reportedSignatures.has(signature)) return;
+      reportedSignatures.add(signature);
+      errorCountThisSession++;
+
+      const payload = {
+        message: message.substring(0, 500),
+        error_type: errorType.substring(0, 100),
+        stack: stack.substring(0, 3000),
+        url: url.substring(0, 500),
+        line: line,
+        col: col,
+        platform: (tg && tg.platform) || 'browser',
+        tg_version: (tg && tg.version) || '',
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        user_agent: navigator.userAgent.substring(0, 255),
+      };
+
+      const endpoint = window.__BANANABOT_ERROR_ENDPOINT || '/panel/api/log-client-error/';
+
+      if (navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        navigator.sendBeacon(endpoint, blob);
+      } else {
+        fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(function () {});
+      }
+    } catch (e) {
+      // Prevent reporting recursion
+    }
+  };
+
+  window.addEventListener('error', function (event) {
+    window.reportClientError({
+      message: event.message,
+      errorType: (event.error && event.error.name) || 'UnhandledError',
+      stack: (event.error && event.error.stack) || '',
+      url: event.filename || window.location.href,
+      line: event.lineno,
+      col: event.colno,
+    });
+  });
+
+  window.addEventListener('unhandledrejection', function (event) {
+    const reason = event.reason;
+    window.reportClientError({
+      message: reason instanceof Error ? reason.message : String(reason),
+      errorType: (reason && reason.name) || 'UnhandledPromiseRejection',
+      stack: (reason && reason.stack) || '',
+      url: window.location.href,
+    });
+  });
+
   // ── Sidebar Toggle & Drawer Control ─────────────────────────────────────
   window.toggleSidebar = function () {
     const sidebar = document.getElementById('sidebar');

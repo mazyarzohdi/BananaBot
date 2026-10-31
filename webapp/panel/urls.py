@@ -54,6 +54,13 @@ urlpatterns = [
     # Admin — settings
     path("admin/settings/", views.admin_settings, name="admin_settings"),
 
+    # Admin — user error logs
+    path("admin/errors/", views.admin_errors, name="admin_errors"),
+    path("admin/errors/<int:log_id>/resolve/", views.admin_error_resolve, name="admin_error_resolve"),
+
+    # Client-side Error Reporting API (Telegram Mini App & Web Panel)
+    path("api/log-client-error/", views.log_client_error, name="log_client_error"),
+
     # CardGozar Gateway Callback / Webhook
     path("api/payments/cardgozar/callback/", views.cardgozar_callback, name="cardgozar_callback"),
 ]

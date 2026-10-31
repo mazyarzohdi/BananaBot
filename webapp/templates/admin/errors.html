@@ -1,0 +1,161 @@
+{% extends "shared/base.html" %}
+{% block title %}گزارش خطاهای کاربران{% endblock %}
+{% block page_title %}گزارش و ردیابی خطاهای کاربران{% endblock %}
+{% block nav_errors %}active{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-toolbar" style="flex-wrap: wrap; gap: 0.75rem; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+    <div class="filter-tabs" style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+      <a href="?source={{ source }}&q={{ search }}" class="tab {% if resolved == '' %}active{% endif %}">همه</a>
+      <a href="?resolved=0&source={{ source }}&q={{ search }}" class="tab {% if resolved == '0' %}active{% endif %}">در انتظار بررسی</a>
+      <a href="?resolved=1&source={{ source }}&q={{ search }}" class="tab {% if resolved == '1' %}active{% endif %}">حل‌شده</a>
+      <span style="border-left: 1px solid rgba(255,255,255,0.1); margin: 0 0.25rem;"></span>
+      <a href="?source=telegram_bot&resolved={{ resolved }}&q={{ search }}" class="tab {% if source == 'telegram_bot' %}active{% endif %}">🤖 ربات تلگرام</a>
+      <a href="?source=webapp_js&resolved={{ resolved }}&q={{ search }}" class="tab {% if source == 'webapp_js' %}active{% endif %}">🌐 کلاینت / مینی‌اپ</a>
+      <a href="?source=web_backend&resolved={{ resolved }}&q={{ search }}" class="tab {% if source == 'web_backend' %}active{% endif %}">⚙️ سرور وب</a>
+    </div>
+
+    <form method="get" style="display: flex; gap: 0.5rem; align-items: center;">
+      {% if source %}<input type="hidden" name="source" value="{{ source }}">{% endif %}
+      {% if resolved %}<input type="hidden" name="resolved" value="{{ resolved }}">{% endif %}
+      <input type="text" name="q" value="{{ search }}" placeholder="کد پیگیری، آیدی یا پیام..." 
+             style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; padding: 0.45rem 0.85rem; border-radius: 0.6rem; font-size: 0.88rem; width: 200px;">
+      <button type="submit" class="btn btn-sm btn-primary"><i class="fa fa-search"></i> جستجو</button>
+      {% if search %}
+        <a href="?source={{ source }}&resolved={{ resolved }}" class="btn btn-sm btn-secondary" title="حذف فیلتر جستجو"><i class="fa fa-times"></i></a>
+      {% endif %}
+    </form>
+  </div>
+
+  <div style="font-size: 0.86rem; color: #94a3b8; margin-bottom: 0.75rem;">
+    تعداد کل رکوردها: <strong>{{ total_count }}</strong>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>کد پیگیری</th>
+          <th>منبع</th>
+          <th>کاربر</th>
+          <th>نوع خطا</th>
+          <th>خلاصه خطا</th>
+          <th>زمان</th>
+          <th>وضعیت</th>
+          <th>جزئیات</th>
+          <th>عملیات</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for log in logs %}
+        <tr>
+          <td>
+            <code style="color: #38bdf8; font-weight: 700;">{{ log.tracking_code }}</code>
+          </td>
+          <td>
+            {% if log.source == 'telegram_bot' %}
+              <span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa;"><i class="fa-brands fa-telegram"></i> ربات</span>
+            {% elif log.source == 'webapp_js' %}
+              <span class="badge" style="background: rgba(234, 179, 8, 0.2); color: #facc15;"><i class="fa-brands fa-js"></i> مینی‌اپ</span>
+            {% else %}
+              <span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171;"><i class="fa fa-server"></i> بک‌اند</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if log.telegram_id %}
+              <a href="{% url 'panel:admin_user_detail' log.telegram_id %}" style="color: #38bdf8; text-decoration: none;">
+                <code>{{ log.telegram_id }}</code>
+              </a>
+            {% else %}
+              <span style="color: #64748b;">ناشناس</span>
+            {% endif %}
+          </td>
+          <td>
+            <span style="font-size: 0.85rem; font-weight: 600;">{{ log.error_type }}</span>
+          </td>
+          <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ log.error_message }}">
+            {{ log.error_message }}
+          </td>
+          <td>
+            <small style="color: #94a3b8; white-space: nowrap;">{{ log.created_at }}</small>
+          </td>
+          <td>
+            {% if log.resolved %}
+              <span class="badge-green"><i class="fa fa-check"></i> حل‌شده</span>
+            {% else %}
+              <span class="badge-red"><i class="fa fa-clock"></i> جدید</span>
+            {% endif %}
+          </td>
+          <td>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleDetails('detail-{{ log.id }}')" title="مشاهده استک‌تریس">
+              <i class="fa fa-code"></i>
+            </button>
+          </td>
+          <td>
+            <form method="post" action="{% url 'panel:admin_error_resolve' log.id %}" style="display: inline;">
+              {% csrf_token %}
+              {% if log.resolved %}
+                <input type="hidden" name="resolved" value="0">
+                <button type="submit" class="btn btn-sm btn-secondary" title="بازگشت به حالت باز"><i class="fa fa-rotate-left"></i></button>
+              {% else %}
+                <input type="hidden" name="resolved" value="1">
+                <button type="submit" class="btn btn-sm btn-primary" title="علامت‌گذاری به عنوان حل‌شده"><i class="fa fa-check"></i></button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        <tr id="detail-{{ log.id }}" style="display: none; background: rgba(0,0,0,0.3);">
+          <td colspan="9" style="padding: 1rem 1.5rem;">
+            <div style="margin-bottom: 0.5rem;">
+              <strong>مسیر / درخواست:</strong> <code>{{ log.request_url|default:"نامشخص" }}</code>
+            </div>
+            {% if log.client_info_parsed %}
+            <div style="margin-bottom: 0.75rem; font-size: 0.85rem; color: #cbd5e1;">
+              <strong>اطلاعات کلاینت:</strong>
+              پلتفرم: <code>{{ log.client_info_parsed.platform|default:"-" }}</code> |
+              نسخه وب‌اپ: <code>{{ log.client_info_parsed.tg_version|default:"-" }}</code> |
+              رزولوشن: <code>{{ log.client_info_parsed.viewport|default:"-" }}</code> |
+              IP: <code>{{ log.client_info_parsed.ip|default:"-" }}</code>
+            </div>
+            {% endif %}
+            <div style="font-size: 0.85rem; margin-bottom: 0.25rem;"><strong>Stack Trace:</strong></div>
+            <pre style="background: #080b11; border: 1px solid rgba(255,255,255,0.1); border-radius: 0.5rem; padding: 0.75rem; max-height: 250px; overflow-y: auto; font-size: 0.8rem; color: #f87171; direction: ltr; text-align: left; white-space: pre-wrap; font-family: Consolas, monospace;">{{ log.stack_trace|default:log.error_message }}</pre>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="9" class="empty-row" style="text-align: center; padding: 2rem; color: #94a3b8;">
+            <i class="fa fa-check-circle" style="font-size: 2rem; color: #22c55e; margin-bottom: 0.5rem; display: block;"></i>
+            هیچ خطایی ثبت نشده است. سیستم کاملاً پایدار است!
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if total_pages > 1 %}
+  <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 1.25rem;">
+    {% if page > 1 %}
+      <a href="?page={{ page|add:'-1' }}&source={{ source }}&resolved={{ resolved }}&q={{ search }}" class="btn btn-sm btn-secondary">صفحه قبل</a>
+    {% endif %}
+    <span style="display: flex; align-items: center; font-size: 0.88rem; color: #94a3b8; padding: 0 0.5rem;">
+      صفحه {{ page }} از {{ total_pages }}
+    </span>
+    {% if page < total_pages %}
+      <a href="?page={{ page|add:'1' }}&source={{ source }}&resolved={{ resolved }}&q={{ search }}" class="btn btn-sm btn-secondary">صفحه بعد</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<script>
+function toggleDetails(rowId) {
+  var row = document.getElementById(rowId);
+  if (row) {
+    row.style.display = (row.style.display === 'none' || row.style.display === '') ? 'table-row' : 'none';
+  }
+}
+</script>
+{% endblock %}

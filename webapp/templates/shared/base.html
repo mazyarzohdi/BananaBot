@@ -90,6 +90,9 @@
       <a href="{% url 'panel:admin_settings' %}" class="nav-item {% block nav_settings %}{% endblock %}">
         <i class="fa fa-gear"></i> تنظیمات ربات
       </a>
+      <a href="{% url 'panel:admin_errors' %}" class="nav-item {% block nav_errors %}{% endblock %}">
+        <i class="fa fa-triangle-exclamation"></i> گزارش خطاها
+      </a>
       {% endif %}
     </nav>
 
@@ -194,6 +197,9 @@
 <!-- Toast notifications container -->
 <div class="toast-container" id="toastContainer"></div>
 
+<script>
+  window.__BANANABOT_ERROR_ENDPOINT = "{% url 'panel:log_client_error' %}";
+</script>
 <script src="{% static 'js/main.js' %}"></script>
 <script>
   (function () {
