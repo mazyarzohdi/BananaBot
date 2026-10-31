@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import os
 import re
 from typing import Any
@@ -40,11 +40,64 @@ def _replace_placeholders(query: str) -> str:
     return "".join(result)
 
 
+def _convert_scalar_max_min(query: str) -> str:
+    """Converts SQLite multi-argument scalar MAX(a, b) / MIN(a, b) to Postgres GREATEST(a, b) / LEAST(a, b).
+    Preserves single-argument aggregate MAX(col) / MIN(col).
+    """
+    pattern = re.compile(r'\b(MAX|MIN)\s*\(', re.IGNORECASE)
+    pos = 0
+    result = []
+    while True:
+        m = pattern.search(query, pos)
+        if not m:
+            result.append(query[pos:])
+            break
+        result.append(query[pos:m.start()])
+        func_name = m.group(1).upper()
+        start_paren = m.end() - 1
+        depth = 1
+        i = start_paren + 1
+        n = len(query)
+        has_comma = False
+        in_quote = False
+        quote_char = ''
+        while i < n and depth > 0:
+            c = query[i]
+            if not in_quote:
+                if c in ("'", '"'):
+                    in_quote = True
+                    quote_char = c
+                elif c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                elif c == ',' and depth == 1:
+                    has_comma = True
+            else:
+                if c == quote_char:
+                    if i + 1 < n and query[i + 1] == quote_char:
+                        i += 1
+                    else:
+                        in_quote = False
+            i += 1
+        if depth == 0 and has_comma:
+            replacement = 'GREATEST(' if func_name == 'MAX' else 'LEAST('
+            inside = _convert_scalar_max_min(query[start_paren + 1 : i - 1])
+            result.append(replacement + inside + ')')
+        else:
+            result.append(query[m.start():i])
+        pos = i
+    return ''.join(result)
+
+
 def _convert_query(query: str, db_type: str) -> str:
     if db_type != "postgres":
         return query
 
     res = _replace_placeholders(query)
+
+    # Translate scalar MAX/MIN (with >= 2 args) to GREATEST/LEAST for Postgres
+    res = _convert_scalar_max_min(res)
 
     # Translate SQLite datetime('now', X) to Postgres CURRENT_TIMESTAMP + CAST(X AS INTERVAL)
     res = re.sub(
@@ -142,8 +195,17 @@ class DBConnectionWrapper:
             self.pg_tr = None
 
     async def close(self):
-        if self.db_type == "postgres" and self.pool:
-            await self.pool.release(self.conn)
+        if self.db_type == "postgres":
+            if self.pg_tr:
+                try:
+                    await self.pg_tr.rollback()
+                except Exception:
+                    pass
+                self.pg_tr = None
+            if self.pool:
+                await self.pool.release(self.conn)
+            else:
+                await self.conn.close()
         else:
             await self.conn.close()
 

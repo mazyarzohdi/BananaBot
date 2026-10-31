@@ -645,7 +645,8 @@ class Database:
             cursor = await conn.execute(
                 "UPDATE payments SET status = 'approved', admin_note = ?, "
                 "gateway_ref_id = COALESCE(?, gateway_ref_id), "
-                "gateway_payer_card = COALESCE(?, gateway_payer_card) "
+                "gateway_payer_card = COALESCE(?, gateway_payer_card), "
+                "balance_credited = 1 "
                 "WHERE id = ? AND status = 'pending'",
                 (admin_note, ref_id or None, payer_card or None, payment_id),
             )
@@ -723,7 +724,7 @@ class Database:
         try:
             await conn.execute("BEGIN EXCLUSIVE")
             cursor = await conn.execute(
-                "UPDATE payments SET status = 'approved', admin_note = 'تایید خودکار (پیامک بانکی)' "
+                "UPDATE payments SET status = 'approved', admin_note = 'تایید خودکار (پیامک بانکی)', balance_credited = 1 "
                 "WHERE id = ? AND status = 'pending'",
                 (payment_id,),
             )
@@ -776,6 +777,86 @@ class Database:
             )
             await conn.commit()
             return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
+    async def approve_manual_payment(
+        self, payment_id: int, admin_id: int
+    ) -> tuple[bool, int, dict | None, str]:
+        """Atomically approves a manual payment and credits the user's balance in a single transaction.
+
+        Guarantees:
+        1. Race-safe against multiple concurrent admin clicks.
+        2. Transactional atomicity: status update and balance update commit together.
+        3. Recovers gracefully if an earlier attempt marked the payment approved but
+           crashed before crediting the user balance (e.g. Postgres scalar MAX error).
+
+        Returns:
+            (success: bool, new_balance: int, payment_dict: dict | None, reason: str)
+            reason:
+              - 'approved_and_credited': normal first-time approval
+              - 'recovered_and_credited': recovered a previously uncredited payment
+              - 'already_approved': already approved and balance was already credited
+              - 'not_found': payment record does not exist
+        """
+        conn = await self.connect()
+        try:
+            await conn.execute("BEGIN EXCLUSIVE")
+            cursor = await conn.execute(
+                "SELECT * FROM payments WHERE id = ?", (payment_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                await conn.rollback()
+                return False, 0, None, "not_found"
+
+            payment = dict(row)
+            status = payment.get("status")
+            balance_credited = int(payment.get("balance_credited") or 0)
+
+            should_credit = False
+            is_recovery = False
+
+            if status == "pending":
+                upd = await conn.execute(
+                    "UPDATE payments SET status = 'approved', handled_by = ?, balance_credited = 1 WHERE id = ? AND status = 'pending'",
+                    (admin_id, payment_id),
+                )
+                if upd.rowcount > 0:
+                    should_credit = True
+            elif status == "approved" and balance_credited == 0:
+                upd = await conn.execute(
+                    "UPDATE payments SET balance_credited = 1, handled_by = COALESCE(handled_by, ?) WHERE id = ? AND status = 'approved' AND (balance_credited IS NULL OR balance_credited = 0)",
+                    (admin_id, payment_id),
+                )
+                if upd.rowcount > 0:
+                    should_credit = True
+                    is_recovery = True
+
+            if not should_credit:
+                await conn.commit()
+                u_cur = await conn.execute("SELECT balance FROM users WHERE id = ?", (payment["user_id"],))
+                u_row = await u_cur.fetchone()
+                curr_bal = u_row["balance"] if u_row else 0
+                return False, curr_bal, payment, "already_approved"
+
+            await conn.execute(
+                "UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?",
+                (payment["amount"], payment["user_id"]),
+            )
+            u_cur = await conn.execute("SELECT balance FROM users WHERE id = ?", (payment["user_id"],))
+            u_row = await u_cur.fetchone()
+            new_balance = u_row["balance"] if u_row else 0
+
+            await conn.commit()
+            payment["balance_credited"] = 1
+            payment["status"] = "approved"
+            payment["handled_by"] = admin_id
+            reason = "recovered_and_credited" if is_recovery else "approved_and_credited"
+            return True, new_balance, payment, reason
+        except Exception:
+            await conn.rollback()
+            raise
         finally:
             await conn.close()
 

@@ -1220,22 +1220,21 @@ async def pay_confirm(callback: CallbackQuery, is_admin: bool):
         return
     payment_id = int(callback.data.split(":")[1])
     db = get_db()
-    payment = await db.get_payment(payment_id)
+
+    success, new_balance, payment, reason = await db.approve_manual_payment(payment_id, callback.from_user.id)
     if not payment:
         await callback.answer("پیدا نشد", show_alert=True)
         return
 
-    claimed = await db.claim_payment(payment_id, "approved", callback.from_user.id)
-    if not claimed:
-        fresh = await db.get_payment(payment_id)
-        await callback.answer("⏱ این پرداخت قبلاً بررسی شده (توسط ادمین دیگر یا تایید خودکار پیامک بانکی).", show_alert=True)
+    if not success:
+        fresh = await db.get_payment(payment_id) or payment
+        await callback.answer("⏱ این پرداخت قبلاً بررسی و تأیید شده است.", show_alert=True)
         await _finalize_payment_messages(
             callback.bot, db, fresh,
             _payment_status_text(fresh, fresh["status"], fresh.get("handled_by") or 0),
         )
         return
 
-    new_balance = await db.update_user_balance(payment["user_id"], payment["amount"])
     user = await db._fetchone("SELECT * FROM users WHERE id = ?", (payment["user_id"],))
     if user:
         text = f"✅ پرداخت تأیید شد.\n💰 موجودی: {new_balance:,} تومان"
@@ -1267,7 +1266,11 @@ async def pay_confirm(callback: CallbackQuery, is_admin: bool):
         await notify_admins_payment_success(callback.bot, db, payment_id)
     except Exception:
         logger.exception("Failed to notify admins of manual approval for #%s", payment_id)
-    await callback.answer("✅ تأیید شد.")
+
+    if reason == "recovered_and_credited":
+        await callback.answer("✅ پرداخت بازیابی شد و موجودی کاربر با موفقیت شارژ گردید.", show_alert=True)
+    else:
+        await callback.answer("✅ تأیید شد و موجودی کاربر شارژ گردید.")
 
 
 @router.callback_query(F.data.startswith("pay_no:"))

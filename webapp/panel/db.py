@@ -77,7 +77,11 @@ def get_conn():
                 parts = query.split('?')
                 if len(parts) > 1:
                     query = "%s".join(parts)
-                query = query.replace("MAX(", "GREATEST(")
+                try:
+                    from database.db_driver import _convert_scalar_max_min
+                    query = _convert_scalar_max_min(query)
+                except Exception:
+                    query = query.replace("MAX(", "GREATEST(")
                 import re as _re
                 query = _re.sub(r"datetime\('now',\s*([^)]+)\)", r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(\1 AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')", query)
                 query = query.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
