@@ -58,7 +58,7 @@ ALL_TABLES = [
     "resellers", "reseller_configs", "coupons", "coupon_uses", "orders", 
     "subscriptions", "payments", "trial_apps", "faq", "tutorials", 
     "api_keys", "api_nonces", "api_request_log", "support_tickets", 
-    "support_ticket_messages", "referral_earnings"
+    "support_ticket_messages", "referral_earnings", "user_error_logs"
 ]
 
 async def get_tables(pg_conn):

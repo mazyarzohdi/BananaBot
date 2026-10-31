@@ -173,54 +173,92 @@ def notify_admins_payment_success_sync(payment_id: int) -> bool:
     if not admin_ids:
         return False
 
-    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bot.db")
+    payment = None
+    user = None
+    prod_name = ""
+    plan_name = ""
+
+    # Prefer webapp.panel.db if available (supports both PostgreSQL and SQLite)
     try:
-        conn = sqlite3.connect(db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        from webapp.panel.db import get_conn, row_to_dict
+        with get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE payments SET admin_notified = 1 WHERE id = ? AND (admin_notified IS NULL OR admin_notified = 0)",
+                (payment_id,),
+            )
+            if getattr(cur, "rowcount", 0) == 0:
+                return False
 
-        # Idempotent claim
-        cur.execute(
-            "UPDATE payments SET admin_notified = 1 WHERE id = ? AND (admin_notified IS NULL OR admin_notified = 0)",
-            (payment_id,),
-        )
-        if cur.rowcount == 0:
+            p_row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+            if not p_row:
+                return False
+            payment = row_to_dict(p_row)
+
+            u_row = conn.execute("SELECT * FROM users WHERE id = ?", (payment["user_id"],)).fetchone()
+            if not u_row:
+                return False
+            user = row_to_dict(u_row)
+
+            if payment.get("product_id"):
+                p_res = conn.execute("SELECT name FROM products WHERE id = ?", (payment["product_id"],)).fetchone()
+                if p_res:
+                    prod_name = p_res[0] if isinstance(p_res, (list, tuple)) else p_res["name"]
+
+            if payment.get("reseller_plan_id"):
+                pl_res = conn.execute("SELECT name FROM reseller_plans WHERE id = ?", (payment["reseller_plan_id"],)).fetchone()
+                if pl_res:
+                    plan_name = pl_res[0] if isinstance(pl_res, (list, tuple)) else pl_res["name"]
+    except Exception:
+        # Fallback to direct sqlite3
+        db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bot.db")
+        try:
+            conn = sqlite3.connect(db_path, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            # Idempotent claim
+            cur.execute(
+                "UPDATE payments SET admin_notified = 1 WHERE id = ? AND (admin_notified IS NULL OR admin_notified = 0)",
+                (payment_id,),
+            )
+            if cur.rowcount == 0:
+                conn.close()
+                return False
+            conn.commit()
+
+            # Fetch payment + user
+            cur.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))
+            p_row = cur.fetchone()
+            if not p_row:
+                conn.close()
+                return False
+            payment = dict(p_row)
+
+            cur.execute("SELECT * FROM users WHERE id = ?", (payment["user_id"],))
+            u_row = cur.fetchone()
+            if not u_row:
+                conn.close()
+                return False
+            user = dict(u_row)
+
+            if payment.get("product_id"):
+                cur.execute("SELECT name FROM products WHERE id = ?", (payment["product_id"],))
+                p_res = cur.fetchone()
+                if p_res:
+                    prod_name = p_res[0]
+
+            if payment.get("reseller_plan_id"):
+                cur.execute("SELECT name FROM reseller_plans WHERE id = ?", (payment["reseller_plan_id"],))
+                pl_res = cur.fetchone()
+                if pl_res:
+                    plan_name = pl_res[0]
+
             conn.close()
+        except Exception as exc:
+            logger.exception("Database error during sync admin payment notification for #%s: %s", payment_id, exc)
             return False
-        conn.commit()
 
-        # Fetch payment + user
-        cur.execute("SELECT * FROM payments WHERE id = ?", (payment_id,))
-        p_row = cur.fetchone()
-        if not p_row:
-            conn.close()
-            return False
-        payment = dict(p_row)
-
-        cur.execute("SELECT * FROM users WHERE id = ?", (payment["user_id"],))
-        u_row = cur.fetchone()
-        if not u_row:
-            conn.close()
-            return False
-        user = dict(u_row)
-
-        prod_name = ""
-        if payment.get("product_id"):
-            cur.execute("SELECT name FROM products WHERE id = ?", (payment["product_id"],))
-            p_res = cur.fetchone()
-            if p_res:
-                prod_name = p_res[0]
-
-        plan_name = ""
-        if payment.get("reseller_plan_id"):
-            cur.execute("SELECT name FROM reseller_plans WHERE id = ?", (payment["reseller_plan_id"],))
-            pl_res = cur.fetchone()
-            if pl_res:
-                plan_name = pl_res[0]
-
-        conn.close()
-    except Exception as exc:
-        logger.exception("Database error during sync admin payment notification for #%s: %s", payment_id, exc)
+    if not payment or not user:
         return False
 
     text, markup_dict = _build_notification_text_and_markup(payment, user, prod_name, plan_name)

@@ -825,22 +825,23 @@ def user_payments_admin_inline(
                 InlineKeyboardButton(text=f"{status_icon} درگاه کارت‌گذر پرداخت #{p['id']}", url=url)
             ])
 
+    safe_search = (search or "")[:12]
     # Pagination row
     if total_pages > 1:
         nav_row = []
         if page > 1:
-            nav_row.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"uadm_pays_pg:{tid}:{page - 1}:{back_page}:{search}"))
+            nav_row.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"uadm_pays_pg:{tid}:{page - 1}:{back_page}:{safe_search}"))
         nav_row.append(InlineKeyboardButton(text=f"📄 {page}/{total_pages}", callback_data="ulist_noop"))
         if page < total_pages:
-            nav_row.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"uadm_pays_pg:{tid}:{page + 1}:{back_page}:{search}"))
+            nav_row.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"uadm_pays_pg:{tid}:{page + 1}:{back_page}:{safe_search}"))
         rows.append(nav_row)
 
     rows.append([
-        InlineKeyboardButton(text="🔙 بازگشت به مشخصات کاربر", callback_data=f"ulist_view:{tid}:{back_page}:{search}")
+        InlineKeyboardButton(text="🔙 بازگشت به مشخصات کاربر", callback_data=f"ulist_view:{tid}:{back_page}:{safe_search}")
     ])
     if back_page:
         rows.append([
-            InlineKeyboardButton(text="👥 بازگشت به لیست کاربران", callback_data=f"ulist_page:{back_page}:{search}")
+            InlineKeyboardButton(text="👥 بازگشت به لیست کاربران", callback_data=f"ulist_page:{back_page}:{safe_search}")
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

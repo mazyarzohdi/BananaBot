@@ -887,47 +887,47 @@ async def trial_account(message: Message, db_user: dict):
             await message.answer(t("trial_used"))
             return
 
-    trial_enabled = await db.get_setting("trial_enabled", "1")
-    if trial_enabled != "1":
-        await message.answer(t("trial_disabled"))
-        return
+        trial_enabled = await db.get_setting("trial_enabled", "1")
+        if trial_enabled != "1":
+            await message.answer(t("trial_disabled"))
+            return
 
-    product = await _resolve_trial_product(db)
-    if not product:
-        await message.answer(t("trial_disabled"))
-        return
+        product = await _resolve_trial_product(db)
+        if not product:
+            await message.answer(t("trial_disabled"))
+            return
 
-    try:
-        result = await sub_service.create_from_product(
-            db_user["id"],
-            message.from_user.id,
-            product,
-            is_trial=True,
-        )
+        try:
+            result = await sub_service.create_from_product(
+                db_user["id"],
+                message.from_user.id,
+                product,
+                is_trial=True,
+            )
 
-        trial_apps = await db.get_trial_apps()
+            trial_apps = await db.get_trial_apps()
 
-        await message.answer(
-            t(
-                "trial_success",
-                email=result["email"],
-                volume=product["volume_gb"],
-                days=product["duration_days"],
-            ),
-            parse_mode="Markdown",
-            reply_markup=service_actions_inline(
-                result["id"], show_back=False, renewable=False, trial_apps=trial_apps,
-            ),
-        )
+            await message.answer(
+                t(
+                    "trial_success",
+                    email=result["email"],
+                    volume=product["volume_gb"],
+                    days=product["duration_days"],
+                ),
+                parse_mode="Markdown",
+                reply_markup=service_actions_inline(
+                    result["id"], show_back=False, renewable=False, trial_apps=trial_apps,
+                ),
+            )
 
-        extra_message = await db.get_setting("trial_extra_message", "")
-        if extra_message:
-            await message.answer(extra_message)
-    except ValueError as e:
-        await message.answer(str(e))
-    except Exception as e:
-        logger.exception("Trial failed")
-        await message.answer(f"❌ خطا: {e}")
+            extra_message = await db.get_setting("trial_extra_message", "")
+            if extra_message:
+                await message.answer(extra_message)
+        except ValueError as e:
+            await message.answer(str(e))
+        except Exception as e:
+            logger.exception("Trial failed")
+            await message.answer(f"❌ خطا: {e}")
 
 
 @router.callback_query(F.data.startswith("dl_trial_apk:"))

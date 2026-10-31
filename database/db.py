@@ -1056,11 +1056,10 @@ class Database:
         )
 
     async def consume_coupon_atomic(self, coupon_id: int, user_id: int, price: int) -> tuple[bool, int, str]:
-        """Atomic validation and consumption of a coupon in a single SQLite transaction."""
+        """Atomic validation and consumption of a coupon in a single transaction."""
         conn = await self.connect()
         try:
             await conn.execute("BEGIN EXCLUSIVE")
-            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute("SELECT * FROM coupons WHERE id = ?", (coupon_id,))
             coupon_row = await cursor.fetchone()
             if not coupon_row:
@@ -1545,7 +1544,7 @@ class Database:
 
     async def cleanup_old_error_logs(self, days: int = 30) -> int:
         return await self._execute(
-            "DELETE FROM user_error_logs WHERE datetime(created_at) < datetime('now', ?)",
+            "DELETE FROM user_error_logs WHERE created_at < datetime('now', ?)",
             (f"-{days} days",),
         )
 

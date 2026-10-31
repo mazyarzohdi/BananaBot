@@ -88,6 +88,8 @@ def get_conn():
                 query = query.replace("date('now')", "CURRENT_DATE")
                 # Translate SQLite date(column) to Postgres (column)::DATE
                 query = _re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', query)
+                # Translate SQLite datetime(column) to Postgres (column)::TIMESTAMP
+                query = _re.sub(r'\bdatetime\((\w+)\)', r'(\1)::TIMESTAMP', query)
                 query = query.replace("BEGIN EXCLUSIVE", "BEGIN")
                 if "ON CONFLICT(key) DO UPDATE" in query:
                     query = query.replace("ON CONFLICT(key) DO UPDATE SET", "ON CONFLICT(key) DO UPDATE SET")
@@ -1202,7 +1204,7 @@ def mark_user_error_resolved(log_id: int, resolved: bool = True) -> bool:
 def cleanup_old_error_logs(days: int = 30) -> int:
     with get_conn() as conn:
         cursor = conn.execute(
-            "DELETE FROM user_error_logs WHERE datetime(created_at) < datetime('now', ?)",
+            "DELETE FROM user_error_logs WHERE created_at < datetime('now', ?)",
             (f"-{days} days",),
         )
         return getattr(cursor, "rowcount", 0) or 0

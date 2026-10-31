@@ -109,6 +109,8 @@ def _convert_query(query: str, db_type: str) -> str:
     res = res.replace("date('now')", "CURRENT_DATE")
     # Translate SQLite date(column) to Postgres (column)::DATE
     res = re.sub(r'\bdate\((\w+)\)', r'(\1)::DATE', res)
+    # Translate SQLite datetime(column) to Postgres (column)::TIMESTAMP
+    res = re.sub(r'\bdatetime\((\w+)\)', r'(\1)::TIMESTAMP', res)
     res = res.replace("BEGIN EXCLUSIVE", "BEGIN")
     if "INSERT OR REPLACE INTO settings (key, value) VALUES" in res:
         res = res.replace(
