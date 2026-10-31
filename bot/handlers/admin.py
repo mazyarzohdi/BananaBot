@@ -2304,6 +2304,14 @@ _SETTINGS_META = {
         "type": "bool",
         "choices": _BOOL_CHOICES,
     },
+    "card_number": {
+        "label": "💳 شماره کارت بانکی",
+        "hint": "شماره کارت ۱۶ رقمی بانکی برای کارت به کارت دستی کاربران. مثال: 6037991234567890",
+    },
+    "card_holder": {
+        "label": "👤 نام صاحب حساب کارت",
+        "hint": "نام و نام خانوادگی صاحب حساب کارت بانکی. مثال: علی محمدی",
+    },
     "cardgozar_api_key": {
         "label": "🔑 کلید API کارت‌گذر",
         "hint": "کلید API دریافتی از پنل کارت‌گذر (cardgozar.ir/dashboard/api-keys/).",
@@ -2712,6 +2720,14 @@ async def cfg_save_value(message: Message, state: FSMContext):
     db = get_db()
 
     # اعتبارسنجی‌های اختصاصی
+    if key == "card_number":
+        clean_num = value.replace(" ", "").replace("-", "")
+        trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        clean_num = clean_num.translate(trans)
+        if clean_num and (not clean_num.isdigit() or len(clean_num) != 16):
+            await message.answer("❌ شماره کارت بانکی باید دقیقاً ۱۶ رقم عددی باشد. لطفاً مجدداً ارسال کنید:")
+            return
+        value = clean_num
     if key == "auto_payment_secret" and value and len(value) < 12:
         await message.answer("❌ برای امنیت، کلید باید حداقل ۱۲ کاراکتر باشد.")
         return

@@ -366,6 +366,8 @@ DEFAULT_SETTINGS = {
     "cardgozar_secret_key": "",
     "cardgozar_callback_url": "",
     "card_payment_enabled": "1",  # "1" = فعال, "0" = غیرفعال (پرداخت با ارسال رسید / کارت به کارت دستی)
+    "card_number": "",
+    "card_holder": "",
     "auto_payment_enabled": "0",
     "auto_payment_secret": "",
     "auto_payment_port": "8100",

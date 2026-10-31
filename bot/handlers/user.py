@@ -146,8 +146,8 @@ async def _send_card_payment_instructions(
     enabled. `answer` is either `message.answer` or `callback.message.answer`.
     Returns the created payment's id."""
     settings = get_settings()
-    card = settings.card_number or await db.get_setting("card_number", "")
-    holder = settings.card_holder or await db.get_setting("card_holder", "")
+    card = (await db.get_setting("card_number", "")).strip() or (settings.card_number or "").strip()
+    holder = (await db.get_setting("card_holder", "")).strip() or (settings.card_holder or "").strip()
 
     auto_enabled = (await db.get_setting("auto_payment_enabled", "0")) == "1"
 
@@ -194,47 +194,41 @@ async def _send_card_payment_instructions(
 
 async def _get_payment_mode(db) -> str:
     """Returns the effective active payment method mode: 'both', 'cardgozar', 'card', or 'none'.
-    Respects admin toggles, API keys, and card configuration.
+    Respects admin toggles and mode choice.
     """
     mode = await db.get_setting("payment_method_mode", "both")
 
     cg_enabled = (await db.get_setting("cardgozar_enabled", "1")) == "1"
-    cg_api_key = (await db.get_setting("cardgozar_api_key", "")).strip()
-    has_cg = cg_enabled and bool(cg_api_key)
-
     card_enabled = (await db.get_setting("card_payment_enabled", "1")) == "1"
-    settings = get_settings()
-    card_num = (settings.card_number or "").strip() or (await db.get_setting("card_number", "")).strip()
-    has_card = card_enabled and bool(card_num)
 
     if mode == "none":
         return "none"
     elif mode == "cardgozar":
-        if has_cg:
+        if cg_enabled:
             return "cardgozar"
-        elif has_card:
+        elif card_enabled:
             return "card"
         return "none"
     elif mode == "card":
-        if has_card:
+        if card_enabled:
             return "card"
-        elif has_cg:
+        elif cg_enabled:
             return "cardgozar"
         return "none"
     elif mode == "both":
-        if has_cg and has_card:
+        if cg_enabled and card_enabled:
             return "both"
-        elif has_cg:
+        elif cg_enabled:
             return "cardgozar"
-        elif has_card:
+        elif card_enabled:
             return "card"
         return "none"
     else:
-        if has_cg and has_card:
+        if cg_enabled and card_enabled:
             return "both"
-        elif has_cg:
+        elif cg_enabled:
             return "cardgozar"
-        elif has_card:
+        elif card_enabled:
             return "card"
         return "none"
 
@@ -804,9 +798,9 @@ async def card_topup_start(callback: CallbackQuery, db_user: dict, state: FSMCon
         return
 
     settings = get_settings()
-    card = settings.card_number or await db.get_setting("card_number", "")
+    card = (await db.get_setting("card_number", "")).strip() or (settings.card_number or "").strip()
     if not card:
-        await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
+        await callback.answer("❌ شماره کارت هنوز توسط مدیریت ثبت نشده است. لطفاً از طریق پشتیبانی اقدام فرمایید.", show_alert=True)
         return
 
     payment_id = await _send_card_payment_instructions(
@@ -1272,9 +1266,9 @@ async def card_topup_renew_start(callback: CallbackQuery, db_user: dict):
         return
 
     settings = get_settings()
-    card = settings.card_number or await db.get_setting("card_number", "")
+    card = (await db.get_setting("card_number", "")).strip() or (settings.card_number or "").strip()
     if not card:
-        await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
+        await callback.answer("❌ شماره کارت هنوز توسط مدیریت ثبت نشده است. لطفاً از طریق پشتیبانی اقدام فرمایید.", show_alert=True)
         return
 
     await _send_card_payment_instructions(
@@ -1390,9 +1384,9 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
         await _initiate_cardgozar_payment(message.answer, db, db_user["id"], amount)
     elif mode == "card":
         settings = get_settings()
-        card = settings.card_number or await db.get_setting("card_number", "")
+        card = (await db.get_setting("card_number", "")).strip() or (settings.card_number or "").strip()
         if not card:
-            await message.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.")
+            await message.answer("❌ شماره کارت هنوز توسط مدیریت ثبت نشده است. لطفاً از طریق پشتیبانی اقدام فرمایید.")
             await state.clear()
             return
 
@@ -1668,9 +1662,9 @@ async def reseller_card_topup_start(callback: CallbackQuery, db_user: dict):
         return
 
     settings = get_settings()
-    card = settings.card_number or await db.get_setting("card_number", "")
+    card = (await db.get_setting("card_number", "")).strip() or (settings.card_number or "").strip()
     if not card:
-        await callback.answer("❌ شماره کارت تنظیم نشده. با ادمین تماس بگیرید.", show_alert=True)
+        await callback.answer("❌ شماره کارت هنوز توسط مدیریت ثبت نشده است. لطفاً از طریق پشتیبانی اقدام فرمایید.", show_alert=True)
         return
 
     await _send_card_payment_instructions(
