@@ -244,13 +244,13 @@ async def _initiate_cardgozar_payment(
     if product_id:
         prod = await db.get_product(product_id)
         if prod:
-            item_name = f"خرید سرویس {prod['name']}"
+            item_name = f"خرید سرویس {html.escape(prod['name'])}"
     elif renew_sub_id:
         item_name = f"تمدید سرویس #{renew_sub_id}"
     elif reseller_plan_id:
         plan = await db.get_reseller_plan(reseller_plan_id)
         if plan:
-            item_name = f"خرید/تمدید نمایندگی {plan['name']}"
+            item_name = f"خرید/تمدید نمایندگی {html.escape(plan['name'])}"
 
     callback_url = await db.get_setting("cardgozar_callback_url", "")
     if not callback_url:
@@ -267,11 +267,11 @@ async def _initiate_cardgozar_payment(
         )
     except CardGozarError as exc:
         logger.error("CardGozar creation error for user %s: %s", user_id, exc)
-        await answer(f"❌ خطا در ایجاد سفارش درگاه پرداخت کارت‌گذر:\n{exc}")
+        await answer(f"❌ خطا در ایجاد سفارش درگاه پرداخت کارت‌گذر:\n{html.escape(str(exc))}", parse_mode="HTML")
         return None
     except Exception as exc:
         logger.exception("Unexpected error initiating CardGozar payment")
-        await answer(f"❌ خطا در اتصال به درگاه پرداخت: {exc}")
+        await answer(f"❌ خطا در اتصال به درگاه پرداخت: {html.escape(str(exc))}", parse_mode="HTML")
         return None
 
     order_token = res.get("order_token")
@@ -932,7 +932,7 @@ async def trial_account(message: Message, db_user: dict):
             await message.answer(str(e))
         except Exception as e:
             logger.exception("Trial failed")
-            await message.answer(f"❌ خطا: {e}")
+            await message.answer(f"❌ خطا: {html.escape(str(e))}")
 
 
 @router.callback_query(F.data.startswith("dl_trial_apk:"))
@@ -1120,7 +1120,7 @@ async def refresh_link(callback: CallbackQuery, db_user: dict):
             "«دریافت کانفیگ» یا «دریافت لینک ساب» استفاده کنید."
         )
     except Exception as e:
-        await callback.message.answer(f"❌ خطا: {e}")
+        await callback.message.answer(f"❌ خطا: {html.escape(str(e))}")
     await callback.answer()
 
 
@@ -1310,7 +1310,7 @@ async def show_usage(callback: CallbackQuery, db_user: dict):
         )
         await callback.message.answer(text)
     except Exception as e:
-        await callback.message.answer(f"❌ خطا: {e}")
+        await callback.message.answer(f"❌ خطا: {html.escape(str(e))}")
     await callback.answer()
 
 

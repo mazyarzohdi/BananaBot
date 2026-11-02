@@ -83,7 +83,7 @@ def get_conn():
                 except Exception:
                     query = query.replace("MAX(", "GREATEST(")
                 import re as _re
-                query = _re.sub(r"datetime\('now',\s*([^)]+)\)", r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(\1 AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')", query)
+                query = _re.sub(r"datetime\('now',\s*([^)]+)\)", r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(CAST(\1 AS TEXT) AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')", query)
                 query = query.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")
                 query = query.replace("date('now')", "CURRENT_DATE")
                 # Translate SQLite date(column) to Postgres (column)::DATE

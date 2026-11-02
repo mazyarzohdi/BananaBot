@@ -643,7 +643,7 @@ async def main():
         await db._execute(
             "UPDATE payments SET order_id = 0 "
             "WHERE status = 'approved' AND (order_id IS NULL OR order_id = -1) "
-            "AND datetime(created_at) < datetime('now', '-10 minutes')"
+            "AND created_at < datetime('now', '-10 minutes')"
         )
     except Exception as exc:
         logger.debug("Payment startup sanitization: %s", exc)

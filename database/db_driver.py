@@ -102,7 +102,7 @@ def _convert_query(query: str, db_type: str) -> str:
     # Translate SQLite datetime('now', X) to Postgres CURRENT_TIMESTAMP + CAST(X AS INTERVAL)
     res = re.sub(
         r"datetime\('now',\s*([^)]+)\)",
-        r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(\1 AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')",
+        r"TO_CHAR((CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + CAST(CAST(\1 AS TEXT) AS INTERVAL), 'YYYY-MM-DD HH24:MI:SS')",
         res,
     )
     res = res.replace("datetime('now')", "TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')")

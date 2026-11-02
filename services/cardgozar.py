@@ -1,4 +1,4 @@
-﻿"""CardGozar (کارت‌گذر) P2P Payment Gateway Client.
+"""CardGozar (کارت‌گذر) P2P Payment Gateway Client.
 
 Implements official REST API v1 for CardGozar (https://cardgozar.ir/dashboard/api-docs)
 including payment creation, verification, public live polling, and HMAC-SHA256
@@ -123,7 +123,12 @@ class CardGozarClient:
                         data = await resp.json()
                     except Exception:
                         text = await resp.text()
-                        data = {"error": text}
+                        if "<html" in text.lower() or "<!doctype" in text.lower():
+                            logger.warning("CardGozar create returned HTML response (HTTP %s): %s", status, text[:300])
+                            clean_err = f"پاسخ سرور درگاه نامعتبر بود (کد وضعیت: {status})"
+                        else:
+                            clean_err = text[:200]
+                        data = {"error": clean_err}
 
                     order_tok = data.get("order_token")
                     if status in (200, 201) and (data.get("payment_url") or order_tok):
@@ -137,6 +142,8 @@ class CardGozarClient:
                         return data
 
                     err_msg = data.get("error") or data.get("detail") or data.get("message")
+                    if isinstance(err_msg, str) and ("<html" in err_msg.lower() or "<!doctype" in err_msg.lower()):
+                        err_msg = f"پاسخ سرور درگاه نامعتبر بود (کد وضعیت: {status})"
                     if status == 401:
                         err_msg = "کلید API کارت‌گذر نامعتبر است یا غیرفعال شده است."
                     elif status == 403:
@@ -180,12 +187,19 @@ class CardGozarClient:
                         data = await resp.json()
                     except Exception:
                         text = await resp.text()
-                        data = {"error": text}
+                        if "<html" in text.lower() or "<!doctype" in text.lower():
+                            logger.warning("CardGozar verify returned HTML response (HTTP %s): %s", status, text[:300])
+                            clean_err = f"پاسخ سرور درگاه نامعتبر بود (کد وضعیت: {status})"
+                        else:
+                            clean_err = text[:200]
+                        data = {"error": clean_err}
 
                     if status == 200:
                         return data
 
                     err_msg = data.get("error") or data.get("detail") or f"خطا در استعلام تایید پرداخت ({status})"
+                    if isinstance(err_msg, str) and ("<html" in err_msg.lower() or "<!doctype" in err_msg.lower()):
+                        err_msg = f"خطا در استعلام تایید پرداخت ({status})"
                     raise CardGozarError(err_msg, status_code=status, response_data=data)
 
             except aiohttp.ClientError as exc:
@@ -243,13 +257,18 @@ class CardGozarClient:
                     return data
 
                 err_msg = data.get("error") or data.get("detail") or f"خطا در استعلام تایید پرداخت ({status})"
+                if isinstance(err_msg, str) and ("<html" in err_msg.lower() or "<!doctype" in err_msg.lower()):
+                    err_msg = f"خطا در استعلام تایید پرداخت ({status})"
                 raise CardGozarError(err_msg, status_code=status, response_data=data)
         except urllib.error.HTTPError as exc:
             try:
-                err_data = json.loads(exc.read().decode("utf-8"))
+                err_text = exc.read().decode("utf-8")
+                err_data = json.loads(err_text)
             except Exception:
                 err_data = {}
             err_msg = err_data.get("error") or err_data.get("detail") or f"خطا در استعلام ({exc.code})"
+            if isinstance(err_msg, str) and ("<html" in err_msg.lower() or "<!doctype" in err_msg.lower()):
+                err_msg = f"خطا در استعلام ({exc.code})"
             raise CardGozarError(err_msg, status_code=exc.code, response_data=err_data)
         except CardGozarError:
             raise
