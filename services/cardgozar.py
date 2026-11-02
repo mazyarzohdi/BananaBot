@@ -35,6 +35,23 @@ class CardGozarError(Exception):
         self.response_data = response_data or {}
 
 
+def is_cardgozar_paid(data: Any) -> bool:
+    """Strictly evaluates whether CardGozar API response data indicates a paid invoice.
+
+    Prevents false-positives where the HTTP envelope contains 'status': 'success'
+    or 'status': 'ok' while 'is_paid' is False or not yet confirmed.
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get("is_paid") is True:
+        return True
+    if data.get("is_paid") is False:
+        return False
+    raw_status = str(data.get("status", "")).strip().lower()
+    return raw_status in ("paid", "completed", "settled")
+
+
+
 class CardGozarClient:
     DEFAULT_BASE_URL = "https://cardgozar.ir"
 

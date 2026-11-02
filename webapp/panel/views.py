@@ -1352,7 +1352,7 @@ def cardgozar_callback(request: HttpRequest):
     """Handles CardGozar webhook (POST) and customer redirect (GET)."""
     bot_username = ""
     try:
-        from services.cardgozar import CardGozarClient, CardGozarError
+        from services.cardgozar import CardGozarClient, CardGozarError, is_cardgozar_paid
         from . import telegram_api
 
         api_key = bot_db.get_setting("cardgozar_api_key", "")
@@ -1382,10 +1382,7 @@ def cardgozar_callback(request: HttpRequest):
                 logger.error("Error verifying payment with CardGozar in webhook: %s", exc)
                 return JsonResponse({"error": "verification failed", "detail": str(exc)}, status=502)
 
-            is_paid = (
-                verify_res.get("is_paid") is True
-                or str(verify_res.get("status", "")).lower() in ("paid", "completed", "success", "ok")
-            )
+            is_paid = is_cardgozar_paid(verify_res)
 
             if not is_paid:
                 return JsonResponse({"status": "not_paid"})
@@ -1395,7 +1392,7 @@ def cardgozar_callback(request: HttpRequest):
 
             with bot_db.get_conn() as conn:
                 cur = conn.execute(
-                    "SELECT * FROM payments WHERE gateway_order_token = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+                    "SELECT * FROM payments WHERE gateway_order_token = ? AND status = 'pending' AND receipt_file_id IS NULL ORDER BY id DESC LIMIT 1",
                     (order_token,),
                 )
                 payment_row = cur.fetchone()
@@ -1411,7 +1408,7 @@ def cardgozar_callback(request: HttpRequest):
                     "UPDATE payments SET status = 'approved', admin_note = ?, "
                     "gateway_ref_id = COALESCE(?, gateway_ref_id), "
                     "gateway_payer_card = COALESCE(?, gateway_payer_card) "
-                    "WHERE id = ? AND status = 'pending'",
+                    "WHERE id = ? AND status = 'pending' AND receipt_file_id IS NULL",
                     (admin_note, ref_id or None, payer_card or None, payment["id"]),
                 )
                 if cur_upd.rowcount > 0:
@@ -1486,7 +1483,7 @@ def cardgozar_callback(request: HttpRequest):
 
         # SECURITY HARDENING: Never trust client-supplied GET params to approve payments.
         # Verification MUST come directly from CardGozar API server-to-server.
-        if payment and payment["status"] == "pending":
+        if payment and payment["status"] == "pending" and not payment.get("receipt_file_id"):
             is_verified_paid = False
             ref_id = tracking_code
             payer_card = ""
@@ -1495,11 +1492,7 @@ def cardgozar_callback(request: HttpRequest):
             if token_to_verify and api_key:
                 try:
                     verify_res = client.verify_payment_sync(token_to_verify)
-                    res_status = str(verify_res.get("status", "")).lower()
-                    if (
-                        verify_res.get("is_paid") is True
-                        or res_status in ("paid", "completed", "success", "ok")
-                    ):
+                    if verify_res and is_cardgozar_paid(verify_res):
                         is_verified_paid = True
                         ref_id = str(verify_res.get("ref_id") or verify_res.get("tracking_code") or ref_id)
                         payer_card = str(verify_res.get("payer_card") or "")
@@ -1507,8 +1500,7 @@ def cardgozar_callback(request: HttpRequest):
                     logger.warning("verify_payment API check warning for %s: %s", token_to_verify, exc)
                     try:
                         stat_res = client.get_payment_status_sync(token_to_verify)
-                        st_val = str(stat_res.get("status", "")).lower()
-                        if stat_res.get("is_paid") is True or st_val in ("paid", "completed", "success", "ok"):
+                        if stat_res and is_cardgozar_paid(stat_res):
                             is_verified_paid = True
                             ref_id = str(stat_res.get("ref_id") or stat_res.get("tracking_code") or ref_id)
                     except Exception as exc2:
@@ -1524,7 +1516,7 @@ def cardgozar_callback(request: HttpRequest):
                         "UPDATE payments SET status = 'approved', admin_note = ?, "
                         "gateway_ref_id = COALESCE(?, gateway_ref_id), "
                         "gateway_payer_card = COALESCE(?, gateway_payer_card) "
-                        "WHERE id = ? AND status = 'pending'",
+                        "WHERE id = ? AND status = 'pending' AND receipt_file_id IS NULL",
                         (admin_note, ref_id or None, payer_card or None, payment["id"]),
                     )
                     if cur_upd.rowcount > 0:

@@ -24,7 +24,7 @@ from bot.handlers import admin_router, user_router
 from bot.middlewares import ThrottlingMiddleware, UserMiddleware
 from config import get_settings
 from database import get_db
-from services.cardgozar import CardGozarClient, CardGozarError
+from services.cardgozar import CardGozarClient, CardGozarError, is_cardgozar_paid
 from services.order_fulfillment import fulfill_payment
 from services.subscription import SubscriptionService
 from utils.helpers import format_expiry
@@ -93,12 +93,11 @@ async def _cardgozar_polling_loop(bot: Bot, db):
                         order_token = p.get("gateway_order_token")
                         if not order_token:
                             continue
+                        if p.get("receipt_file_id"):
+                            continue
                         try:
                             verify_data = await client.verify_payment(order_token)
-                            is_paid = (
-                                verify_data.get("is_paid") is True
-                                or verify_data.get("status") in ("paid", "completed", "success")
-                            )
+                            is_paid = is_cardgozar_paid(verify_data)
                             if is_paid:
                                 ref_id = str(verify_data.get("ref_id") or verify_data.get("tracking_code") or "")
                                 payer_card = str(verify_data.get("payer_card") or "")

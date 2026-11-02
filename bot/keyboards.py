@@ -292,6 +292,16 @@ def cardgozar_invoice_inline(payment_url: str, payment_id: int) -> InlineKeyboar
     )
 
 
+def cardgozar_receipt_submitted_inline(payment_id: int) -> InlineKeyboardMarkup:
+    """کیبورد فاکتور کارت‌گذر پس از ارسال رسید دستی توسط کاربر."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏳ رسید شما در صف بررسی مدیریت است", callback_data="noop")],
+        ]
+    )
+
+
+
 def payment_method_choice_inline(
     action_type: str, target_id: int, amount: int, has_cg: bool = True, has_card: bool = True
 ) -> InlineKeyboardMarkup:

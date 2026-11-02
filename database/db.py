@@ -622,10 +622,11 @@ class Database:
         )
 
     async def get_pending_gateway_payments(self, gateway: str = "cardgozar") -> list[dict]:
-        """Returns all pending payments for a specific gateway that haven't expired."""
+        """Returns all pending payments for a specific gateway that haven't expired and have no manual receipt uploaded."""
         return await self._fetchall(
             "SELECT py.*, u.telegram_id FROM payments py JOIN users u ON py.user_id = u.id "
             "WHERE py.payment_method = ? AND py.status = 'pending' "
+            "AND py.receipt_file_id IS NULL "
             "AND (py.expires_at IS NULL OR py.expires_at > datetime('now')) "
             "ORDER BY py.id DESC",
             (gateway,),
@@ -647,7 +648,7 @@ class Database:
                 "gateway_ref_id = COALESCE(?, gateway_ref_id), "
                 "gateway_payer_card = COALESCE(?, gateway_payer_card), "
                 "balance_credited = 1 "
-                "WHERE id = ? AND status = 'pending'",
+                "WHERE id = ? AND status = 'pending' AND receipt_file_id IS NULL",
                 (admin_note, ref_id or None, payer_card or None, payment_id),
             )
             if cursor.rowcount == 0:

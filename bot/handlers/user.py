@@ -19,6 +19,7 @@ from bot.keyboards import (
     balance_inline,
     cancel_kb,
     cardgozar_invoice_inline,
+    cardgozar_receipt_submitted_inline,
     channel_required_inline,
     complete_purchase_inline,
     confirm_buy_inline,
@@ -47,7 +48,7 @@ from bot.keyboards import (
 from bot.messages import t
 from config import get_settings
 from database import get_db
-from services.cardgozar import CardGozarClient, CardGozarError
+from services.cardgozar import CardGozarClient, CardGozarError, is_cardgozar_paid
 from services.order_fulfillment import fulfill_payment
 from services.subscription import SubscriptionService
 from utils.helpers import format_expiry, load_config_links, parse_positive_int
@@ -55,6 +56,11 @@ from utils.helpers import format_expiry, load_config_links, parse_positive_int
 logger = logging.getLogger(__name__)
 router = Router()
 sub_service = SubscriptionService()
+
+
+@router.callback_query(F.data == "noop")
+async def user_noop_callback(callback: CallbackQuery):
+    await callback.answer()
 
 _user_locks: dict[int, asyncio.Lock] = {}
 
@@ -1394,6 +1400,8 @@ async def _process_receipt_upload(
     file_id: str,
     *,
     is_doc: bool = False,
+    invoice_chat_id: int | None = None,
+    invoice_message_id: int | None = None,
 ):
     payment_id = payment["id"]
     await db._execute(
@@ -1479,6 +1487,16 @@ async def _process_receipt_upload(
     if sent_refs:
         await db.set_payment_notif_chats(payment_id, sent_refs)
 
+    if invoice_chat_id and invoice_message_id and is_cg:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=invoice_chat_id,
+                message_id=invoice_message_id,
+                reply_markup=cardgozar_receipt_submitted_inline(payment_id),
+            )
+        except Exception as exc:
+            logger.debug("Failed updating invoice keyboard after receipt upload: %s", exc)
+
     await message.answer(
         "✅ رسید شما با موفقیت برای مدیریت ارسال شد.\n"
         "به محض بررسی و تأیید رسید توسط ادمین، حسابتان شارژ و نتیجه به شما اطلاع داده خواهد شد.",
@@ -1514,6 +1532,8 @@ async def manual_receipt_handler(message: Message, state: FSMContext, db_user: d
 
     data = await state.get_data()
     payment_id = data.get("manual_receipt_payment_id")
+    inv_chat_id = data.get("invoice_chat_id")
+    inv_msg_id = data.get("invoice_message_id")
     await state.clear()
 
     db = get_db()
@@ -1536,7 +1556,7 @@ async def manual_receipt_handler(message: Message, state: FSMContext, db_user: d
         await message.answer("❌ هیچ فاکتور پرداخت فعالی برای ثبت رسید یافت نشد.", reply_markup=main_menu())
         return
 
-    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc)
+    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc, invoice_chat_id=inv_chat_id, invoice_message_id=inv_msg_id)
 
 
 @router.message(F.photo)
@@ -1557,6 +1577,8 @@ async def deposit_receipt_doc(message: Message, db_user: dict, state: FSMContext
 async def _handle_generic_receipt(message: Message, db_user: dict, state: FSMContext, file_id: str, is_doc: bool):
     data = await state.get_data()
     payment_id = data.get("manual_receipt_payment_id")
+    inv_chat_id = data.get("invoice_chat_id")
+    inv_msg_id = data.get("invoice_message_id")
     await state.clear()
 
     db = get_db()
@@ -1576,7 +1598,7 @@ async def _handle_generic_receipt(message: Message, db_user: dict, state: FSMCon
             return
         payment = pending[0]
 
-    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc)
+    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc, invoice_chat_id=inv_chat_id, invoice_message_id=inv_msg_id)
 
 
 def _format_reseller_expiry(ts: int) -> str:
@@ -1905,6 +1927,29 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
         await callback.answer("پرداخت پیدا نشد.", show_alert=True)
         return
 
+    # Hard-block automated verification if a manual receipt has been submitted for admin review
+    if payment.get("receipt_file_id"):
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=cardgozar_receipt_submitted_inline(payment_id)
+            )
+        except Exception:
+            pass
+
+        if payment["status"] == "pending":
+            await callback.answer(
+                "⏳ رسید این پرداخت برای بررسی دستی ادمین ارسال شده است و امکان استعلام خودکار وجود ندارد.\n"
+                "لطفاً تا بررسی و تأیید توسط مدیریت شکیبا باشید.",
+                show_alert=True,
+            )
+            return
+        elif payment["status"] == "approved":
+            await callback.answer("✅ این پرداخت قبلاً توسط مدیریت بررسی و تأیید شده است.", show_alert=True)
+            return
+        elif payment["status"] in ("cancelled", "rejected"):
+            await callback.answer("❌ این پرداخت لغو یا توسط مدیریت رد شده است.", show_alert=True)
+            return
+
     ref_id = payment.get("gateway_ref_id") or ""
 
     if payment["status"] == "approved":
@@ -2031,10 +2076,7 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
         await callback.answer(f"❌ خطا در استعلام از درگاه: {exc}", show_alert=True)
         return
 
-    is_paid = (
-        verify_data.get("is_paid") is True
-        or verify_data.get("status") in ("paid", "completed", "success")
-    )
+    is_paid = is_cardgozar_paid(verify_data)
     if not is_paid:
         await callback.answer(t("cardgozar_pending_verification"), show_alert=True)
         return
@@ -2125,7 +2167,13 @@ async def cardgozar_receipt_callback(callback: CallbackQuery, state: FSMContext,
         return
 
     await state.set_state(ManualReceiptForm.waiting_for_receipt)
-    await state.update_data(manual_receipt_payment_id=payment_id)
+    inv_chat_id = callback.message.chat.id if callback.message else None
+    inv_msg_id = callback.message.message_id if callback.message else None
+    await state.update_data(
+        manual_receipt_payment_id=payment_id,
+        invoice_chat_id=inv_chat_id,
+        invoice_message_id=inv_msg_id,
+    )
 
     item_desc = "افزایش موجودی کیف پول"
     if payment.get("product_id"):
@@ -2157,6 +2205,14 @@ async def cardgozar_cancel_callback(callback: CallbackQuery, db_user: dict):
     payment = await db.get_payment(payment_id)
     if not payment or payment["user_id"] != db_user["id"]:
         await callback.answer("پرداخت پیدا نشد.", show_alert=True)
+        return
+
+    if payment.get("receipt_file_id"):
+        await callback.answer(
+            "⏳ رسید این پرداخت برای بررسی ادمین ارسال شده است و امکان انصراف وجود ندارد.\n"
+            "لطفاً منتظر بررسی مدیریت بمانید.",
+            show_alert=True,
+        )
         return
 
     if payment["status"] == "pending":
