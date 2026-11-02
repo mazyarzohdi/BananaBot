@@ -1175,10 +1175,13 @@ async def admin_payments(message: Message):
             sent = await message.answer_photo(
                 p["receipt_file_id"],
                 caption=text,
-                reply_markup=payment_actions_inline(p["id"]),
+                reply_markup=payment_actions_inline(p["id"], gateway_url=p.get("gateway_payment_url")),
             )
         else:
-            sent = await message.answer(text, reply_markup=payment_actions_inline(p["id"]))
+            sent = await message.answer(
+                text,
+                reply_markup=payment_actions_inline(p["id"], gateway_url=p.get("gateway_payment_url")),
+            )
         await db.append_payment_notif_chat(p["id"], sent.chat.id, sent.message_id)
 
 

@@ -1,6 +1,7 @@
 """User-facing bot handlers."""
 
 import asyncio
+import html
 import logging
 import random
 import time
@@ -92,6 +93,10 @@ async def _reward_referral_and_notify(bot, db, buyer_user_id: int, purchase_amou
 
 class DepositForm(StatesGroup):
     amount = State()
+
+
+class ManualReceiptForm(StatesGroup):
+    waiting_for_receipt = State()
 
 
 class CouponForm(StatesGroup):
@@ -1381,64 +1386,197 @@ async def deposit_amount(message: Message, state: FSMContext, db_user: dict):
         )
 
 
-@router.message(F.photo)
-async def deposit_receipt(message: Message, db_user: dict):
-    db = get_db()
-    pending = await db._fetchall(
-        "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' AND receipt_file_id IS NULL "
-        "ORDER BY id DESC LIMIT 1",
-        (db_user["id"],),
-    )
-    if not pending:
-        return
-
-    payment = pending[0]
-    file_id = message.photo[-1].file_id
+async def _process_receipt_upload(
+    message: Message,
+    db,
+    db_user: dict,
+    payment: dict,
+    file_id: str,
+    *,
+    is_doc: bool = False,
+):
+    payment_id = payment["id"]
     await db._execute(
         "UPDATE payments SET receipt_file_id = ? WHERE id = ?",
-        (file_id, payment["id"]),
+        (file_id, payment_id),
     )
 
-    caption = (
-        f"💳 درخواست افزایش موجودی\n"
-        f"👤 کاربر: {message.from_user.id}\n"
-        f"💰 مبلغ پرداختی: {payment['amount']:,} تومان"
-    )
+    is_cg = payment.get("payment_method") == "cardgozar" or bool(payment.get("gateway_payment_url"))
+
+    user_name = html.escape(message.from_user.full_name or "—")
+    username_str = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+
+    if is_cg:
+        header = "🧾 <b>رسید دستی درگاه کارت‌گذر (عدم تایید خودکار)</b>"
+    else:
+        header = "💳 <b>درخواست افزایش موجودی (کارت به کارت)</b>"
+
+    caption_lines = [
+        header,
+        "",
+        f"▫️ شماره پرداخت: <b>#{payment_id}</b>",
+        f"👤 کاربر: <b>{user_name}</b> ({username_str})",
+        f"🆔 چت‌آیدی: <code>{message.from_user.id}</code>",
+        f"💰 مبلغ پرداختی: <b>{payment['amount']:,} تومان</b>",
+    ]
+
+    if is_cg:
+        if payment.get("gateway_tracking_code"):
+            caption_lines.append(f"🔢 شناسه/کد رهگیری: <code>{payment['gateway_tracking_code']}</code>")
+        if payment.get("gateway_payment_url"):
+            caption_lines.append(f"🔗 لینک درگاه: {payment['gateway_payment_url']}")
+
     if payment.get("coupon_code") and payment.get("discount_amount"):
         original = payment["amount"] + payment["discount_amount"]
-        caption += (
-            f"\n🎟 کوپن تخفیف: {payment['coupon_code']}"
-            f"\n📉 مقدار تخفیف: −{payment['discount_amount']:,} تومان"
-            f"\n🏷 قیمت اصلی: {original:,} تومان"
-        )
+        caption_lines.extend([
+            f"🎟 کوپن تخفیف: <code>{payment['coupon_code']}</code>",
+            f"📉 مقدار تخفیف: −{payment['discount_amount']:,} تومان",
+            f"🏷 قیمت اصلی: {original:,} تومان",
+        ])
+
     if payment.get("renew_sub_id"):
-        caption += f"\n🔁 برای تکمیل تمدید سرویس: #{payment['renew_sub_id']}"
+        caption_lines.append(f"🔁 برای تکمیل تمدید سرویس: #{payment['renew_sub_id']}")
     elif payment.get("reseller_plan_id"):
         plan = await db.get_reseller_plan(payment["reseller_plan_id"])
         if plan:
-            caption += f"\n🤝 برای تکمیل خرید/تمدید نمایندگی: {plan['name']}"
+            caption_lines.append(f"🤝 برای تکمیل خرید/تمدید نمایندگی: {plan['name']}")
     elif payment.get("product_id"):
         product = await db.get_product(payment["product_id"])
         if product:
-            caption += f"\n🛒 برای تکمیل خرید: {product['name']}"
+            caption_lines.append(f"🛒 برای تکمیل خرید: {product['name']}")
+
+    caption = "\n".join(caption_lines)
 
     settings = get_settings()
     sent_refs = []
+    reply_kb = payment_actions_inline(
+        payment_id,
+        gateway_url=payment.get("gateway_payment_url") if is_cg else None,
+    )
+
     for admin_id in settings.admin_ids:
         try:
-            sent = await message.bot.send_photo(
-                admin_id,
-                file_id,
-                caption=caption,
-                reply_markup=payment_actions_inline(payment["id"]),
-            )
+            if is_doc:
+                sent = await message.bot.send_document(
+                    admin_id,
+                    file_id,
+                    caption=caption,
+                    reply_markup=reply_kb,
+                    parse_mode="HTML",
+                )
+            else:
+                sent = await message.bot.send_photo(
+                    admin_id,
+                    file_id,
+                    caption=caption,
+                    reply_markup=reply_kb,
+                    parse_mode="HTML",
+                )
             sent_refs.append({"chat_id": sent.chat.id, "message_id": sent.message_id})
-        except Exception:
-            pass
-    if sent_refs:
-        await db.set_payment_notif_chats(payment["id"], sent_refs)
+        except Exception as exc:
+            logger.warning("Failed sending receipt to admin %s: %s", admin_id, exc)
 
-    await message.answer(t("deposit_pending"), reply_markup=main_menu())
+    if sent_refs:
+        await db.set_payment_notif_chats(payment_id, sent_refs)
+
+    await message.answer(
+        "✅ رسید شما با موفقیت برای مدیریت ارسال شد.\n"
+        "به محض بررسی و تأیید رسید توسط ادمین، حسابتان شارژ و نتیجه به شما اطلاع داده خواهد شد.",
+        reply_markup=main_menu(),
+    )
+
+
+@router.message(ManualReceiptForm.waiting_for_receipt)
+async def manual_receipt_handler(message: Message, state: FSMContext, db_user: dict):
+    if message.text == t("cancel"):
+        await state.clear()
+        await message.answer(t("operation_cancelled"), reply_markup=main_menu())
+        return
+
+    file_id = None
+    is_doc = False
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        mime = (message.document.mime_type or "").lower()
+        if mime.startswith("image/"):
+            file_id = message.document.file_id
+            is_doc = True
+        else:
+            await message.answer("⚠️ لطفاً فایل تصویر رسید (عکس) را ارسال فرمایید.")
+            return
+    else:
+        await message.answer(
+            "📸 لطفاً تصویر رسید پرداخت خود را ارسال کنید، یا دکمه «❌ انصراف» را لمس نمایید.",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    data = await state.get_data()
+    payment_id = data.get("manual_receipt_payment_id")
+    await state.clear()
+
+    db = get_db()
+    payment = None
+    if payment_id:
+        payment = await db.get_payment(payment_id)
+        if payment and (payment["user_id"] != db_user["id"] or payment["status"] != "pending"):
+            payment = None
+
+    if not payment:
+        pending = await db._fetchall(
+            "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' AND receipt_file_id IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (db_user["id"],),
+        )
+        if pending:
+            payment = pending[0]
+
+    if not payment:
+        await message.answer("❌ هیچ فاکتور پرداخت فعالی برای ثبت رسید یافت نشد.", reply_markup=main_menu())
+        return
+
+    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc)
+
+
+@router.message(F.photo)
+async def deposit_receipt(message: Message, db_user: dict, state: FSMContext):
+    file_id = message.photo[-1].file_id
+    await _handle_generic_receipt(message, db_user, state, file_id, is_doc=False)
+
+
+@router.message(F.document)
+async def deposit_receipt_doc(message: Message, db_user: dict, state: FSMContext):
+    mime = (message.document.mime_type or "").lower()
+    if not mime.startswith("image/"):
+        return
+    file_id = message.document.file_id
+    await _handle_generic_receipt(message, db_user, state, file_id, is_doc=True)
+
+
+async def _handle_generic_receipt(message: Message, db_user: dict, state: FSMContext, file_id: str, is_doc: bool):
+    data = await state.get_data()
+    payment_id = data.get("manual_receipt_payment_id")
+    await state.clear()
+
+    db = get_db()
+    payment = None
+    if payment_id:
+        payment = await db.get_payment(payment_id)
+        if payment and (payment["user_id"] != db_user["id"] or payment["status"] != "pending"):
+            payment = None
+
+    if not payment:
+        pending = await db._fetchall(
+            "SELECT * FROM payments WHERE user_id = ? AND status = 'pending' AND receipt_file_id IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (db_user["id"],),
+        )
+        if not pending:
+            return
+        payment = pending[0]
+
+    await _process_receipt_upload(message, db, db_user, payment, file_id, is_doc=is_doc)
 
 
 def _format_reseller_expiry(ts: int) -> str:
@@ -1963,6 +2101,53 @@ async def cardgozar_verify_callback(callback: CallbackQuery, db_user: dict):
             )
         except Exception:
             pass
+
+
+@router.callback_query(F.data.startswith("cg_receipt:"))
+async def cardgozar_receipt_callback(callback: CallbackQuery, state: FSMContext, db_user: dict):
+    payment_id = int(callback.data.split(":")[1])
+    db = get_db()
+    payment = await db.get_payment(payment_id)
+    if not payment or payment["user_id"] != db_user["id"]:
+        await callback.answer("پرداخت پیدا نشد.", show_alert=True)
+        return
+
+    if payment["status"] == "approved":
+        await callback.answer("✅ این پرداخت قبلاً تأیید شده است.", show_alert=True)
+        return
+
+    if payment["status"] in ("cancelled", "rejected"):
+        await callback.answer("❌ این پرداخت لغو یا رد شده است.", show_alert=True)
+        return
+
+    if payment.get("receipt_file_id"):
+        await callback.answer("⏳ رسید این پرداخت قبلاً ارسال شده و در انتظار بررسی ادمین است.", show_alert=True)
+        return
+
+    await state.set_state(ManualReceiptForm.waiting_for_receipt)
+    await state.update_data(manual_receipt_payment_id=payment_id)
+
+    item_desc = "افزایش موجودی کیف پول"
+    if payment.get("product_id"):
+        prod = await db.get_product(payment["product_id"])
+        if prod:
+            item_desc = f"خرید «{prod['name']}»"
+    elif payment.get("renew_sub_id"):
+        item_desc = f"تمدید سرویس #{payment['renew_sub_id']}"
+    elif payment.get("reseller_plan_id"):
+        plan = await db.get_reseller_plan(payment["reseller_plan_id"])
+        if plan:
+            item_desc = f"خرید/تمدید نمایندگی «{plan['name']}»"
+
+    await callback.answer()
+    msg = (
+        f"🧾 <b>ثبت و ارسال رسید دستی پرداخت کارت‌گذر</b>\n\n"
+        f"▫️ سفارش: <b>{item_desc}</b> (شماره فاکتور: #{payment_id})\n"
+        f"▫️ مبلغ پرداختی: <b>{payment['amount']:,} تومان</b>\n\n"
+        "📸 لطفاً <b>عکس یا تصویر رسید واریزی</b> خود را در پاسخ به همین پیام ارسال فرمایید.\n"
+        "به محض بررسی و تأیید ادمین، حسابتان شارژ خواهد شد."
+    )
+    await callback.message.answer(msg, reply_markup=cancel_kb(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("cg_cancel:"))

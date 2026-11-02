@@ -281,10 +281,11 @@ def insufficient_balance_inline(product_id: int, mode: str = "both") -> InlineKe
 
 
 def cardgozar_invoice_inline(payment_url: str, payment_id: int) -> InlineKeyboardMarkup:
-    """کیبورد اختصاصی فاکتور کارت‌گذر با دکمه ورود به درگاه و دکمه استعلام و تایید در ربات."""
+    """کیبورد اختصاصی فاکتور کارت‌گذر با دکمه ورود به درگاه، ارسال رسید دستی و استعلام و تایید در ربات."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔗 ورود به درگاه پرداخت کارت‌گذر", url=payment_url)],
+            [InlineKeyboardButton(text="🧾 پرداخت کردم اما تایید نشد(ارسال رسید دستی)", callback_data=f"cg_receipt:{payment_id}")],
             [InlineKeyboardButton(text="🔄 بررسی و تایید پرداخت", callback_data=f"cg_verify:{payment_id}")],
             [InlineKeyboardButton(text="❌ انصراف از پرداخت", callback_data=f"cg_cancel:{payment_id}")],
         ]
@@ -434,15 +435,15 @@ def product_delete_confirm_inline(product_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def payment_actions_inline(payment_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ تأیید", callback_data=f"pay_ok:{payment_id}"),
-                InlineKeyboardButton(text="❌ رد", callback_data=f"pay_no:{payment_id}"),
-            ]
-        ]
-    )
+def payment_actions_inline(payment_id: int, gateway_url: str | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if gateway_url:
+        rows.append([InlineKeyboardButton(text="🔗 مشاهده تراکنش در کارت‌گذر", url=gateway_url)])
+    rows.append([
+        InlineKeyboardButton(text="✅ تأیید", callback_data=f"pay_ok:{payment_id}"),
+        InlineKeyboardButton(text="❌ رد", callback_data=f"pay_no:{payment_id}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def faq_inline(faqs: list[dict]) -> InlineKeyboardMarkup:
