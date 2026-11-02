@@ -1440,7 +1440,7 @@ class Database:
         top_products = await self._fetchall(
             "SELECT p.name, COUNT(*) as sales_count, COALESCE(SUM(p.price), 0) as revenue "
             "FROM subscriptions s JOIN products p ON s.product_id = p.id "
-            "GROUP BY s.product_id ORDER BY sales_count DESC LIMIT 5"
+            "GROUP BY s.product_id, p.name ORDER BY sales_count DESC LIMIT 5"
         )
 
         reseller_revenue_row = await self._fetchone(
